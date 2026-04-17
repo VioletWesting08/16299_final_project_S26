@@ -4,7 +4,7 @@ import time
 
 # 1. Load the model from the XML file and create a data object
 # Use 'scene.xml' to get the robot + floor + lighting
-model = mujoco.MjModel.from_xml_path('scene.xml')
+model = mujoco.MjModel.from_xml_path('franka_emika_panda/scene.xml')
 data = mujoco.MjData(model)
 
 # 2. Launch the interactive viewer
