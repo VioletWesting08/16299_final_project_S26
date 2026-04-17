@@ -11,7 +11,7 @@ xml_content = """
     <include file="scene.xml"/>
     
     <worldbody>
-        <body name="centrifuge_tube" pos="0.4 0.0 0.05">
+        <body name="centrifuge_tube" pos="0.6 0.0 0.1">
             <freejoint/>
             <geom type="cylinder" size="0.02 0.05" rgba="0.2 0.6 1 1" mass="0.05" condim="4" friction="1 0.05 0.0001"/>
         </body>
@@ -36,11 +36,11 @@ if hand_id == -1:
 # 3. DEFINE THE STATE MACHINE
 # A sequence of movements. Gripper target is in meters (0.04 is fully open, 0.00 is fully closed)
 phases = [
-    {"name": "1. Hover above tube",  "target_xyz": [0.4, 0.0, 0.30], "gripper": 0.04, "time": 3.0},
-    {"name": "2. Descend to tube",   "target_xyz": [0.4, 0.0, 0.12], "gripper": 0.04, "time": 2.0},
-    {"name": "3. Grasp the tube",    "target_xyz": [0.4, 0.0, 0.12], "gripper": 0.00, "time": 1.0}, # Wait while closing
-    {"name": "4. Lift the tube",     "target_xyz": [0.4, 0.0, 0.40], "gripper": 0.00, "time": 2.0},
-    {"name": "5. Transport to goal", "target_xyz": [0.4, 0.4, 0.40], "gripper": 0.00, "time": 3.0},
+    {"name": "1. Hover above tube",  "target_xyz": [0.6, 0.0, 0.30], "gripper": 0.04, "time": 3.0},
+    {"name": "2. Descend to tube",   "target_xyz": [0.6, 0.0, 0.12], "gripper": 0.04, "time": 2.0},
+    {"name": "3. Grasp the tube",    "target_xyz": [0.6, 0.0, 0.12], "gripper": 0.00, "time": 1.0}, # Wait while closing
+    {"name": "4. Lift the tube",     "target_xyz": [0.6, 0.0, 0.40], "gripper": 0.00, "time": 2.0},
+    {"name": "5. Transport to goal", "target_xyz": [0.6, 0.4, 0.40], "gripper": 0.00, "time": 3.0},
 ]
 
 def get_current_phase(elapsed_time):
