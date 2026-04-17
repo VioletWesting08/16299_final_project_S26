@@ -1,29 +1,9 @@
-"""
-Franka Panda - Centrifuge Tube Transport
-16299 Project
-
-Simulates a Franka Panda arm transporting a centrifuge tube while
-monitoring end-effector jerk and lateral acceleration as a proxy
-for liquid mixing risk.
-
-Dependencies:
-    pip install mujoco numpy
-
-Usage:
-    python franka_tube_transport.py
-
-    The viewer will open. The arm will execute a min-jerk trajectory
-    from start to goal joints. Metrics are logged to:
-        - console (live)
-        - mixing_log.csv (post-run)
-"""
-
 import mujoco
 import mujoco.viewer
 import numpy as np
 import csv
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 
 
@@ -31,35 +11,28 @@ from typing import List
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-XML_PATH = "franka_emika_panda/scene.xml"   # path to your Franka MuJoCo XML
+# Updated to look for the file in the current working directory
+XML_PATH = "franka_emika_panda/scene.xml"   
 LOG_PATH = "mixing_log.csv"
 
 # Trajectory
-MANEUVER_TIME   = 4.0           # seconds for the full move
-SETTLE_TIME     = 1.0           # seconds to hold at goal before logging ends
+MANEUVER_TIME   = 4.0           
+SETTLE_TIME     = 1.0           
 
-# Start and goal joint configurations (radians)
-# These are example values — adjust to your scene
 START_JOINTS = np.array([ 0.0, -0.5,  0.0, -2.0,  0.0,  1.5,  0.8])
 GOAL_JOINTS  = np.array([ 0.5,  0.2, -0.3, -1.5,  0.2,  1.8,  1.2])
 
-# PID gains (per joint, 7 joints)
-# Roughly based on real Franka defaults — tune KD first for this project
 KP = np.array([4500, 4500, 3500, 3500, 2000, 2000,  500], dtype=float)
 KI = np.array([   1,    1,    1,    1,    1,    1,    1], dtype=float)
 KD = np.array([ 450,  450,  350,  350,  200,  200,   50], dtype=float)
 
-# Franka torque limits (Nm) per joint
 TORQUE_LIMITS = np.array([87, 87, 87, 87, 12, 12, 12], dtype=float)
 
-# Mixing risk weights
-W_LATERAL_ACC = 1.0
-W_JERK        = 2.0            # jerk weighted higher — sudden changes mix more
+W_LATERAL_ACC = 0.1
+W_JERK        = 0.2            
 
-# Tube axis in gripper local frame (assumes tube is along gripper Z)
 TUBE_AXIS_LOCAL = np.array([0.0, 0.0, 1.0])
 
-# Print metrics every N steps
 PRINT_EVERY = 200
 
 
@@ -68,11 +41,6 @@ PRINT_EVERY = 200
 # ─────────────────────────────────────────────
 
 def min_jerk(t: float, T: float, q0: np.ndarray, qf: np.ndarray) -> np.ndarray:
-    """
-    Minimum-jerk trajectory between q0 and qf over duration T.
-    Returns desired joint positions at time t.
-    Clamps to endpoints outside [0, T].
-    """
     if t <= 0:
         return q0.copy()
     if t >= T:
@@ -87,39 +55,24 @@ def min_jerk(t: float, T: float, q0: np.ndarray, qf: np.ndarray) -> np.ndarray:
 # ─────────────────────────────────────────────
 
 class FrankaPID:
-    """
-    Manual torque-level PID controller for Franka's 7 joints.
-    D term uses measured joint velocity (data.qvel) for stability.
-    """
-
     def __init__(self, kp: np.ndarray, ki: np.ndarray, kd: np.ndarray):
         self.kp = kp
         self.ki = ki
         self.kd = kd
         self.integral   = np.zeros(7)
-        self.integral_clamp = 5.0       # anti-windup clamp (Nm·s)
+        self.integral_clamp = 5.0       
 
     def reset(self):
         self.integral[:] = 0.0
 
-    def compute(
-        self,
-        q_desired:  np.ndarray,
-        q_actual:   np.ndarray,
-        qd_actual:  np.ndarray,
-        dt:         float
-    ) -> np.ndarray:
-        """
-        Returns torque commands for all 7 joints.
-        qd_actual: measured joint velocities (data.qvel[:7])
-        """
+    def compute(self, q_desired: np.ndarray, q_actual: np.ndarray, qd_actual: np.ndarray, dt: float) -> np.ndarray:
         error = q_desired - q_actual
         self.integral += error * dt
         self.integral = np.clip(self.integral, -self.integral_clamp, self.integral_clamp)
 
         torque = (self.kp * error
                 + self.ki * self.integral
-                - self.kd * qd_actual)      # minus: velocity damping
+                - self.kd * qd_actual)      
 
         return np.clip(torque, -TORQUE_LIMITS, TORQUE_LIMITS)
 
@@ -129,11 +82,6 @@ class FrankaPID:
 # ─────────────────────────────────────────────
 
 class EEKinematics:
-    """
-    Computes velocity, acceleration, and jerk of the end-effector
-    via finite differencing of body_xvelp (linear velocity in world frame).
-    """
-
     def __init__(self, dt: float):
         self.dt       = dt
         self.prev_vel = np.zeros(3)
@@ -148,19 +96,11 @@ class EEKinematics:
 
 
 def world_to_tube_frame(vec_world: np.ndarray, xmat: np.ndarray) -> np.ndarray:
-    """
-    Project a world-frame vector into the tube's local frame.
-    xmat: 3x3 rotation matrix of the gripper body (data.body_xmat[id].reshape(3,3))
-    """
     R = xmat.reshape(3, 3)
     return R.T @ vec_world
 
 
 def decompose_acceleration(acc_local: np.ndarray):
-    """
-    Decompose local-frame acceleration into axial (along tube) and lateral components.
-    Returns (acc_axial, acc_lateral) both as 3-vectors.
-    """
     axial_proj = np.dot(acc_local, TUBE_AXIS_LOCAL)
     acc_axial   = axial_proj * TUBE_AXIS_LOCAL
     acc_lateral = acc_local - acc_axial
@@ -180,25 +120,11 @@ class StepLog:
     torque_norm:     float
 
 class MixingMonitor:
-    """
-    Accumulates a scalar mixing risk integral over the trajectory.
-
-    risk_rate = W_LATERAL_ACC * |acc_lateral| + W_JERK * |jerk|
-    risk_integral = ∫ risk_rate dt
-    """
-
     def __init__(self):
         self.risk_integral = 0.0
         self.log: List[StepLog] = []
 
-    def update(
-        self,
-        t:           float,
-        acc_local:   np.ndarray,
-        jerk_world:  np.ndarray,
-        torques:     np.ndarray,
-        dt:          float
-    ) -> float:
+    def update(self, t: float, acc_local: np.ndarray, jerk_world: np.ndarray, torques: np.ndarray, dt: float) -> float:
         _, acc_lateral = decompose_acceleration(acc_local)
         lat_mag  = float(np.linalg.norm(acc_lateral))
         jerk_mag = float(np.linalg.norm(jerk_world))
@@ -252,26 +178,22 @@ class MixingMonitor:
 # ─────────────────────────────────────────────
 
 def main():
-    # ── Load model ──────────────────────────────
     print(f"[INIT] Loading model: {XML_PATH}")
     model = mujoco.MjModel.from_xml_path(XML_PATH)
     data  = mujoco.MjData(model)
     dt    = model.opt.timestep
     print(f"[INIT] dt={dt:.4f}s | Maneuver time={MANEUVER_TIME}s")
 
-    # ── Get body IDs ────────────────────────────
-    try:
-        hand_id = model.body("hand").id
-    except KeyError:
-        # fallback — some Franka XMLs use different names
-        hand_id = model.body("panda_hand").id
+    # ── Get body IDs via official API ────────────
+    hand_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "hand")
+    if hand_id == -1:
+        # Fallback if "hand" doesn't exist
+        hand_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "panda_hand")
     print(f"[INIT] End-effector body id: {hand_id}")
 
-    # ── Reset to start joints ────────────────────
     data.qpos[:7] = START_JOINTS
     mujoco.mj_forward(model, data)
 
-    # ── Init subsystems ──────────────────────────
     pid     = FrankaPID(KP, KI, KD)
     ee_kin  = EEKinematics(dt)
     monitor = MixingMonitor()
@@ -286,29 +208,26 @@ def main():
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running() and not done:
 
-            # ── Trajectory ───────────────────────
             q_des = min_jerk(t, MANEUVER_TIME, START_JOINTS, GOAL_JOINTS)
 
-            # ── PID torque ───────────────────────
             q_actual  = data.qpos[:7].copy()
             qd_actual = data.qvel[:7].copy()
             torques   = pid.compute(q_des, q_actual, qd_actual, dt)
             data.ctrl[:7] = torques
 
-            # ── Step sim ─────────────────────────
             mujoco.mj_step(model, data)
 
-            # ── EE kinematics ────────────────────
-            vel_world = data.body_xvelp[hand_id].copy()   # linear vel, world frame
+            # ── Modern API Kinematics ────────────
+            # cvel holds spatial velocity [angular, linear] of the body's COM in the world frame
+            vel_world = data.cvel[hand_id][3:6].copy()   
             acc_world, jerk_world = ee_kin.update(vel_world)
 
-            xmat      = data.body_xmat[hand_id].copy()
+            # Modern API xmat property
+            xmat      = data.xmat[hand_id].copy()
             acc_local = world_to_tube_frame(acc_world, xmat)
 
-            # ── Mixing monitor ───────────────────
             risk_rate = monitor.update(t, acc_local, jerk_world, torques, dt)
 
-            # ── Console logging ──────────────────
             if step % PRINT_EVERY == 0:
                 joint_err = float(np.linalg.norm(q_des - q_actual))
                 print(
@@ -318,20 +237,20 @@ def main():
                     f"risk_int={monitor.risk_integral:.4f}"
                 )
 
-            # ── Advance time ─────────────────────
             t    += dt
             step += 1
 
-            # ── Done condition ───────────────────
             if t >= MANEUVER_TIME + SETTLE_TIME:
                 done = True
 
             viewer.sync()
+            
+            # Sync to real-time so you can watch the robot
+            time.sleep(dt) 
 
     wall_elapsed = time.time() - wall_start
     print(f"[DONE] Wall time: {wall_elapsed:.1f}s | Sim time: {t:.2f}s")
 
-    # ── Post-run ─────────────────────────────────
     monitor.summary()
     monitor.save_csv(LOG_PATH)
 
