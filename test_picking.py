@@ -9,89 +9,210 @@ import os
 SCENE_XML = "franka_emika_panda/scene.xml"
 ENV_XML   = "franka_emika_panda/debug_scene.xml"
 
-# --- Jerk PID Parameters ---
-# The PID watches jerk magnitude and outputs a speed scalar in [T_SCALE_MIN, T_SCALE_MAX].
-# High jerk  -> scale decreases (slow down)
-# Low jerk   -> scale increases (speed up toward 1.0)
-JERK_THRESH  = 5.0    # m/s³ — acceptable jerk; PID drives toward this
-JERK_KP      = 0.08
-JERK_KI      = 0.002
-JERK_KD      = 0.005
-T_SCALE_MIN  = 0.05
-T_SCALE_MAX  = 1.0
+# Task-space PID for position feedback
+USE_TASK_SPACE_PID = True     # toggle position PID feedback on/off
+TASK_KP = 0.5     # position gain (higher = stiffer tracking)
+TASK_KI = 0.0     # integral gain
+TASK_KD = 0.2     # derivative gain (damping)
 
-# Inner-loop IK gain (fraction of position error closed per step)
-IK_GAIN      = 10.0   # higher = stiffer tracking; tune per robot stiffness
-IK_LAMBDA_SQ = 1e-4   # damping for DLS IK
+# IK solver parameters
+IK_LAMBDA_SQ = 1e-4   # damping for damped least squares
+IK_GAIN = 1.0         # scaling factor for IK joint velocity commands (1.0 = full application)
 
-# Waypoints: trajectory is FIXED. Only the speed along it changes.
+# Null-space posture control (keeps arm in natural configuration)
+Q_NOMINAL = np.array([0.0, -0.3, 0.0, -1.8, 0.0, 1.5, 0.75])  # comfortable Franka pose (radians)
+NULL_GAIN = 0.5  # how strongly to pull toward nominal pose
+
+# Wrist orientation control (tube alignment with gravity)
+USE_WRIST_PID = True          # toggle wrist orientation control on/off
+USE_LQR_WEIGHT = False         # use LQR-computed weight for null-space blending
+ACCEL_LPFILTER_ALPHA = 0.03   # low-pass filter on acceleration measurement (lower=more smoothing)
+
+# Liquid inertia model (first-order lag in reorientation)
+LIQUID_TAU = 1.0             # liquid reorientation time constant (seconds)
+
+# Testing/validation options
+AGGRESSIVE_TRANSPORT = True   # fast transport phase (0.3s vs 1.0s) for stress-testing
+INIT_TUBE_MISALIGNED = False  # start with tube deliberately tilted
+DEBUG_WRIST_PID = True        # print wrist control diagnostics
 PHASES = [
-    {"name": "1. Hover",     "target_xyz": [0.6182, -0.0470, 0.2958], "gripper": 0.04, "duration": 3.0},
-    {"name": "2. Descend",   "target_xyz": [0.6, 0.0, 0.12], "gripper": 0.04, "duration": 2.0},
-    {"name": "3. Grasp",     "target_xyz": [0.6, 0.0, 0.12], "gripper": 0.00, "duration": 1.5},
-    {"name": "4. Lift",      "target_xyz": [0.6, 0.0, 0.40], "gripper": 0.00, "duration": 2.0},
-    {"name": "5. Transport", "target_xyz": [0.4, 0.4, 0.40], "gripper": 0.00, "duration": 4.0},
-    {"name": "6. Place",     "target_xyz": [0.4, 0.4, 0.12], "gripper": 0.00, "duration": 2.0},
-    {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.12], "gripper": 0.04, "duration": 1.0},
+    {"name": "1. Hover",     "target_xyz": [0.6182, -0.0470, 0.2958], "gripper": 0.04, "duration": 1.0},
+    {"name": "2. Descend",   "target_xyz": [0.6, 0.0, 0.12], "gripper": 0.04, "duration": 1.0},
+    {"name": "3. Grasp",     "target_xyz": [0.6, 0.0, 0.12], "gripper": 0.00, "duration": 0.5},
+    {"name": "4. Lift",      "target_xyz": [0.6, 0.0, 0.40], "gripper": 0.00, "duration": 1.0},
+    {"name": "5. Transport", "target_xyz": [0.4, 0.4, 0.40], "gripper": 0.00, "duration": 0.3 if AGGRESSIVE_TRANSPORT else 1.0},
+    {"name": "6. Place",     "target_xyz": [0.4, 0.4, 0.12], "gripper": 0.00, "duration": 1.0},
+    {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.12], "gripper": 0.04, "duration": 0.5},
 ]
 
 
 # ═══════════════════════════════════════════════════════════════
-# JERK PID  (outer loop)
+# LQR-TUNED ORIENTATION CONTROL
 # ═══════════════════════════════════════════════════════════════
-class JerkController:
-    """
-    Measures EE jerk magnitude, compares to threshold, and outputs a
-    trajectory speed scalar t_scale ∈ [T_SCALE_MIN, T_SCALE_MAX].
+def compute_lqr_orientation_weight(q_orientation_error: float, q_position_error: float) -> float:
+    """Compute optimal null-space blending weight from LQR cost ratio."""
+    relative_priority = q_orientation_error / max(q_position_error, 1e-6)
+    wrist_weight = np.tanh(relative_priority) * 0.75 + 0.15  # max weight ~0.85 for strong wrist control
+    return wrist_weight
 
-    Convention:
-        error > 0  →  jerk below threshold  →  speed up  →  t_scale ↑
-        error < 0  →  jerk above threshold  →  slow down →  t_scale ↓
-    """
+# LQR cost weights
+Q_ORIENTATION_ERROR = 300.0  # heavily prioritize wrist alignment
+Q_POSITION_ERROR = 1000.0
+WRIST_WEIGHT_LQR = compute_lqr_orientation_weight(Q_ORIENTATION_ERROR, Q_POSITION_ERROR)
+WRIST_WEIGHT = 0.27  # fallback weight if USE_LQR_WEIGHT is False
+print(f"[LQR] WRIST_WEIGHT={WRIST_WEIGHT_LQR:.3f}")
+
+# ═══════════════════════════════════════════════════════════════
+# TASK-SPACE PID  (position tracking)
+# ═══════════════════════════════════════════════════════════════
+class TaskSpacePID:
+    """PID for end-effector position feedback."""
     def __init__(self):
-        self.integral   = 0.0
-        self.prev_error = 0.0
-        self.t_scale    = 1.0          # start at full speed
+        self.integral = np.zeros(3)
+        self.prev_error = np.zeros(3)
+        self.integral_clamp = 2.0
 
-    def update(self, jerk_mag: float, dt: float) -> float:
-        error = JERK_THRESH - jerk_mag  # positive when jerk is low (safe to go faster)
+    def reset(self):
+        self.integral[:] = 0.0
+        self.prev_error[:] = 0.0
 
-        self.integral   += error * dt
-        derivative       = (error - self.prev_error) / max(dt, 1e-9)
-        self.prev_error  = error
+    def update(self, position_error: np.ndarray, dt: float) -> np.ndarray:
+        self.integral += position_error * dt
+        self.integral = np.clip(self.integral, -self.integral_clamp, self.integral_clamp)
+        derivative = (position_error - self.prev_error) / max(dt, 1e-9)
+        self.prev_error = position_error.copy()
+        return TASK_KP * position_error + TASK_KI * self.integral + TASK_KD * derivative
 
-        delta = JERK_KP * error + JERK_KI * self.integral + JERK_KD * derivative
-        self.t_scale = float(np.clip(self.t_scale + delta, T_SCALE_MIN, T_SCALE_MAX))
-        return self.t_scale
+
+# JOINT-LEVEL PID CONTROLLER
+class JointPIDController:
+    """Low-level PID controller for tracking desired joint positions."""
+    def __init__(self, ndof=7):
+        self.Kp = np.array([100.0] * ndof)   # position gains
+        self.Kd = np.array([20.0] * ndof)    # velocity damping
+        self.prev_error = np.zeros(ndof)
+
+    def reset(self):
+        self.prev_error[:] = 0.0
+
+    def update(self, q_current: np.ndarray, q_desired: np.ndarray, dq_current: np.ndarray, dt: float) -> np.ndarray:
+        """Compute torque commands to track desired positions."""
+        error = q_desired - q_current
+        derivative = (error - self.prev_error) / max(dt, 1e-9)
+        self.prev_error = error.copy()
+        # tau = Kp * error - Kd * velocity
+        return self.Kp * error - self.Kd * dq_current
+
+
+# ═══════════════════════════════════════════════════════════════
+# WRIST ORIENTATION BIAS (slow gravity alignment, no oscillation)
+# ═══════════════════════════════════════════════════════════════
+class WristOrientationBias:
+    """Slowly accumulate wrist orientation to align tube with settled gravity."""
+    def __init__(self):
+        self.integration_rate = 0.01
+        self.bias_accumulator = np.zeros(3)
+
+    def reset(self):
+        self.bias_accumulator[:] = 0.0
+
+    def compute_error(self, tube_axis: np.ndarray, a_liquid: np.ndarray) -> np.ndarray:
+        """Compute angle error between tube and liquid settlement direction."""
+        a_liq_norm = np.linalg.norm(a_liquid)
+        if a_liq_norm < 1e-6:
+            return np.zeros(3)
+        z_desired = a_liquid / a_liq_norm
+        z_actual = tube_axis / np.linalg.norm(tube_axis)
+
+        cross = np.cross(z_actual, z_desired)
+        dot = np.clip(np.dot(z_actual, z_desired), -1.0, 1.0)
+        angle = np.arccos(dot)
+
+        if np.linalg.norm(cross) < 1e-9:
+            return np.zeros(3)
+
+        return (cross / np.linalg.norm(cross)) * angle
+
+    def compute_bias_direction(self, tube_axis: np.ndarray, a_liquid: np.ndarray) -> np.ndarray:
+        """
+        One-step bias: where should we rotate toward to align with a_liquid?
+        Returns rotation axis scaled by desired rotation magnitude.
+        """
+        a_liq_norm = np.linalg.norm(a_liquid)
+        if a_liq_norm < 1e-6:
+            return np.zeros(3)
+        
+        z_desired = a_liquid / a_liq_norm   # where liquid has settled
+        z_actual = tube_axis / np.linalg.norm(tube_axis)
+
+        # Rotation axis: perpendicular from actual to desired
+        cross = np.cross(z_actual, z_desired)
+        dot = np.clip(np.dot(z_actual, z_desired), -1.0, 1.0)
+        
+        if np.linalg.norm(cross) < 1e-9:
+            return np.zeros(3)  # already aligned
+
+        # Return small step toward desired orientation
+        return cross / np.linalg.norm(cross)
+
+    def update(self, tube_axis: np.ndarray, a_liquid: np.ndarray, dt: float) -> np.ndarray:
+        """Accumulate wrist bias toward gravity alignment."""
+        bias_direction = self.compute_bias_direction(tube_axis, a_liquid)
+        bias_step = self.integration_rate * bias_direction * dt
+        self.bias_accumulator += bias_step
+        
+        bias_norm = np.linalg.norm(self.bias_accumulator)
+        if bias_norm > np.radians(45):
+            self.bias_accumulator *= np.radians(45) / bias_norm
+        
+        return self.bias_accumulator / max(dt, 1e-3)
 
 
 # ═══════════════════════════════════════════════════════════════
 # TRAJECTORY SAMPLER
 # ═══════════════════════════════════════════════════════════════
 class TrajectorySampler:
-    """
-    Stores the fixed sequence of waypoints and maps a single
-    'effective time' value t_eff → (interpolated xyz, gripper width).
-
-    The trajectory shape never changes; only how fast t_eff advances
-    (controlled by t_scale from the JerkController) changes the speed.
-    """
+    """5th-order minimum-jerk trajectory between waypoints."""
     def __init__(self, phases):
-        # Build cumulative time boundaries from the *nominal* durations
-        self.phases     = phases
-        self.durations  = [p["duration"] for p in phases]
-        self.boundaries = np.cumsum(self.durations)   # shape (N,)
+        self.phases = phases
+        self.durations = [p["duration"] for p in phases]
+        self.boundaries = np.cumsum(self.durations)
         self.total_time = self.boundaries[-1]
-
-        # Waypoint start positions: phase i starts where phase i-1 ended.
-        # Phase 0 implicitly starts wherever the robot currently is (set at runtime).
-        self.starts = [None] * len(phases)   # filled in update() on first call
+        self.starts = [None] * len(phases)
+        
+        # Precompute polynomial coefficients for each phase
+        self.poly_coeffs = []  # will be filled in set_start()
 
     def set_start(self, xyz_start: np.ndarray):
         """Call once with the robot's actual EE position at t=0."""
         self.starts[0] = xyz_start.copy()
         for i in range(1, len(self.phases)):
             self.starts[i] = np.array(self.phases[i - 1]["target_xyz"])
+        
+        # Precompute 5th-order polynomial coefficients for each segment
+        self.poly_coeffs = []
+        for i in range(len(self.phases)):
+            start = self.starts[i]
+            end = np.array(self.phases[i]["target_xyz"])
+            T = self.durations[i]  # segment duration
+            
+            # 5th-order minimum-jerk polynomial: x(t) = a0 + a1*t + a2*t^2 + a3*t^3 + a4*t^4 + a5*t^5
+            # Boundary conditions: x(0)=start, x(T)=end, dx/dt(0)=0, dx/dt(T)=0, d2x/dt2(0)=0, d2x/dt2(T)=0
+            # Solve for coefficients a0..a5
+            
+            a0 = start
+            a1 = np.zeros(3)  # initial velocity = 0
+            a2 = np.zeros(3)  # initial acceleration = 0
+            
+            # From boundary conditions: solve for a3, a4, a5
+            # a3 = 10*(end - start) / T^3
+            # a4 = -15*(end - start) / T^4
+            # a5 = 6*(end - start) / T^5
+            a3 = 10 * (end - start) / (T ** 3)
+            a4 = -15 * (end - start) / (T ** 4)
+            a5 = 6 * (end - start) / (T ** 5)
+            
+            self.poly_coeffs.append([a0, a1, a2, a3, a4, a5])
 
     def sample(self, t_eff: float):
         """Return (target_xyz, gripper_width) at effective time t_eff."""
@@ -101,19 +222,19 @@ class TrajectorySampler:
         idx = int(np.searchsorted(self.boundaries, t_eff, side="right"))
         idx = min(idx, len(self.phases) - 1)
 
-        phase    = self.phases[idx]
-        t_start  = self.boundaries[idx - 1] if idx > 0 else 0.0
-        duration = self.durations[idx]
-
-        # Normalized progress within this phase [0, 1]
-        alpha = (t_eff - t_start) / max(duration, 1e-9)
-        alpha = float(np.clip(alpha, 0.0, 1.0))
-
-        # Smooth step (ease-in / ease-out) — keeps trajectory shape smooth
-        # so the PID has less work to do at phase transitions
-        alpha_s = alpha * alpha * (3.0 - 2.0 * alpha)   # smoothstep
-
-        target_xyz = (1.0 - alpha_s) * self.starts[idx] + alpha_s * np.array(phase["target_xyz"])
+        phase = self.phases[idx]
+        t_start = self.boundaries[idx - 1] if idx > 0 else 0.0
+        t_local = t_eff - t_start  # time within this segment
+        
+        # Evaluate 5th-order polynomial
+        a0, a1, a2, a3, a4, a5 = self.poly_coeffs[idx]
+        target_xyz = (a0 + 
+                      a1 * t_local + 
+                      a2 * (t_local ** 2) + 
+                      a3 * (t_local ** 3) + 
+                      a4 * (t_local ** 4) + 
+                      a5 * (t_local ** 5))
+        
         return target_xyz, phase["gripper"]
 
 
@@ -141,12 +262,28 @@ def build_scene(scene_path, out_path):
 def main():
     build_scene(SCENE_XML, ENV_XML)
     model = mujoco.MjModel.from_xml_path(ENV_XML)
+    print("\n=== MODEL DOF LAYOUT ===")
+    for i in range(model.njnt):
+        name = model.joint(i).name
+        dof_addr = model.jnt_dofadr[i]
+        jtype = model.jnt_type[i]
+        print(f"Joint {i}: '{name}' | type={jtype} | dof_addr={dof_addr}")
+
+    print("\n=== ACTUATORS ===")
+    for i in range(model.nu):
+        print(f"Actuator {i}: '{model.actuator(i).name}' | trnid={model.actuator(i).trnid[0]}")
     data  = mujoco.MjData(model)
     dt    = model.opt.timestep
 
     hand_id  = model.body("hand").id
-    jerk_pid = JerkController()
+    task_pid = TaskSpacePID()
+    joint_pid = JointPIDController(ndof=7)
+    wrist_pid = WristOrientationBias()
     traj     = TrajectorySampler(PHASES)
+    
+    # For finite-difference acceleration estimation + filtering
+    prev_ee_vel = np.zeros(3)
+    filtered_ee_accel = np.zeros(3)  # low-pass filtered acceleration
 
     # ── warm-up: let the robot settle at its rest pose ──────────
     for _ in range(500):
@@ -155,124 +292,189 @@ def main():
     mujoco.mj_forward(model, data)
     traj.set_start(data.xpos[hand_id].copy())
 
-    # ── Generate and print full trajectory ──────────────────────
-    # Sample trajectory at regular intervals to show the full path
-    trajectory_samples = 100  # number of points to sample
+    # Initialize tube deliberately misaligned if testing
+    if INIT_TUBE_MISALIGNED:
+        data.qpos[5] += 0.5   # tilt joint 6
+        mujoco.mj_forward(model, data)
+
+    # Generate and log full trajectory
+    trajectory_samples = 100
     full_trajectory = []
     for i in range(trajectory_samples + 1):
         t_sample = i / trajectory_samples * traj.total_time
         xyz, _ = traj.sample(t_sample)
         full_trajectory.append(xyz)
     
-    full_trajectory = np.array(full_trajectory)  # shape: (sample_pts, 3)
-    
-    # Store sample times for tracking during execution
-    trajectory_sample_times = np.linspace(0, traj.total_time, trajectory_samples + 1)
+    full_trajectory = np.array(full_trajectory)
     
     print("\n" + "="*70)
-    print("FULL TRAJECTORY (linearly interpolated, 100 pts)")
+    print("FULL TRAJECTORY (5th-order minimum-jerk, 100 points)")
     print("="*70)
     print("Time [s] | X [m]     | Y [m]     | Z [m]")
     print("-"*70)
-    for i, xyz in enumerate(full_trajectory[::10]):  # print every 10th point
+    for i, xyz in enumerate(full_trajectory[::10]):
         t_sample = (i * 10) / trajectory_samples * traj.total_time
         print(f"{t_sample:7.2f} | {xyz[0]:9.4f} | {xyz[1]:9.4f} | {xyz[2]:9.4f}")
     print("-"*70)
-    print(f"Full trajectory array shape: {full_trajectory.shape}")
     print("="*70 + "\n")
-
-    # ── history buffers for finite-difference jerk ──────────────
-    prev_vel = np.zeros(3)
-    prev_acc = np.zeros(3)
 
     # ── time counters ────────────────────────────────────────────
     # sim_t   : wall-clock simulation time (advances by dt every step)
-    # t_eff   : effective trajectory time  (advances by dt * t_scale)
+    # t_eff   : effective trajectory time  (advances by dt every step)
     sim_t = 0.0
     t_eff = 0.0    
     prev_phase_idx = -1  # track phase transitions
-    next_sample_idx = 0  # track which trajectory sample point we're at
+    
+    # Statistics collection
+    speed_values = []
+    pos_error_values = []
+    tilt_error_values = []
+    mixing_score_values = []
+    
+    # Liquid inertia state
+    a_liquid = np.array([0.0, 0.0, -9.81])  # starts aligned with gravity
 
-    print("Starting trajectory …")
-    print("\nTracking position error at sampled trajectory points:\n")
-    print("Sample# | Time [s] | Desired XYZ                    | Actual XYZ                     | Error [m]")
-    print("-"*115)
+    print("Starting trajectory …\n")
     
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running() and t_eff < traj.total_time:
 
-            # ── 1. MEASURE EE VELOCITY → finite-diff acc & jerk ──
+            # ── 1. MEASURE EE VELOCITY ──────────────────────────────
             vel6 = np.zeros(6)
             mujoco.mj_objectVelocity(
                 model, data, mujoco.mjtObj.mjOBJ_BODY, hand_id, vel6, 0
             )
             cur_vel = vel6[3:].copy()           # linear velocity (world frame)
+            
+            # Collect statistics
+            speed_values.append(float(np.linalg.norm(cur_vel)))
+            
+            # ── COMPUTE EFFECTIVE GRAVITY ────────────────────────────────
+            # a_effective = true gravity + inertial acceleration of EE
+            # Inertial accel estimated by finite differencing EE velocity
+            g = np.array([0.0, 0.0, -9.81])
+            
+            # Raw finite-difference acceleration (very noisy!)
+            ee_accel_raw = (cur_vel - prev_ee_vel) / max(dt, 1e-9)
+            prev_ee_vel = cur_vel.copy()
+            
+            # Low-pass filter to smooth out noise from finite differencing
+            # filtered_accel = alpha * raw + (1 - alpha) * prev_filtered
+            filtered_ee_accel = (ACCEL_LPFILTER_ALPHA * ee_accel_raw + 
+                                (1.0 - ACCEL_LPFILTER_ALPHA) * filtered_ee_accel)
+            
+            a_effective = g + filtered_ee_accel   # what the liquid "feels" (smoothed)
+            
+            # ── LIQUID INERTIA MODEL ─────────────────────────────────────
+            # Liquid doesn't instantly reorient; it lags behind a_effective
+            # First-order lag: liquid "catches up" to effective gravity slowly
+            da_liquid = (a_effective - a_liquid) / LIQUID_TAU
+            a_liquid += da_liquid * dt
 
-            acc  = (cur_vel - prev_vel) / dt
-            jerk = (acc - prev_acc) / dt
-            jerk_mag = float(np.linalg.norm(jerk))
-
-            # ── 2. OUTER LOOP: jerk PID → speed scalar ────────────
-            # Disabled jerk PID for now — run at constant speed
-            # t_scale = jerk_pid.update(jerk_mag, dt)
-            t_scale = 1.0  # constant speed
-
-            # Advance the effective trajectory clock by the scaled step
-            t_eff += dt * t_scale
-
-            # ── 3. SAMPLE FIXED TRAJECTORY at t_eff ──────────────
+            # ── 2. SAMPLE FIXED TRAJECTORY ─────────────────────────
+            # Trajectory runs at constant speed
+            t_eff += dt
             target_xyz, gripper_w = traj.sample(t_eff)
 
-            # ── 4. TASK-SPACE IK → Δq  (3-DOF position only) ────
+            # ── 3. COMPUTE IK ──────────────────────────────────────
             current_xyz = data.xpos[hand_id].copy()
             dx = target_xyz - current_xyz       # position error in world frame
+            
+            # Collect position tracking error
+            pos_error_values.append(float(np.linalg.norm(dx)))
 
+            # Compute both positional and rotational Jacobians
             jacp = np.zeros((3, model.nv))
-            mujoco.mj_jacBody(model, data, jacp, None, hand_id)
-            J = jacp[:, :7]                     # first 7 DOF
+            jacr = np.zeros((3, model.nv))
+            mujoco.mj_jacBody(model, data, jacp, jacr, hand_id)
+            J  = jacp[:, :7]                    # first 7 DOF positional Jacobian
+            Jr = jacr[:, :7]                    # first 7 DOF rotational Jacobian
 
-            # DLS: dq = Jᵀ (J Jᵀ + λ²I)⁻¹ dx
+            # Compute position-task IK (damped least squares)
             JJT   = J @ J.T
             dq    = J.T @ np.linalg.solve(JJT + IK_LAMBDA_SQ * np.eye(3), dx)
+            
+            # Null-space projector
+            J_pinv = J.T @ np.linalg.solve(JJT + IK_LAMBDA_SQ * np.eye(3), np.eye(3))
+            null_proj = np.eye(7) - J_pinv @ J
+            
+            # Compute tube axis and mixing score
+            hand_rot  = data.xmat[hand_id].reshape(3, 3)
+            tube_axis = hand_rot[:, 2]
+            
+            # Compute mixing angle
+            norm_tube = np.linalg.norm(tube_axis)
+            norm_liq  = np.linalg.norm(a_liquid)
+            if norm_tube > 1e-9 and norm_liq > 1e-9:
+                cos_angle = np.clip(
+                    np.dot(tube_axis, a_liquid / norm_liq),
+                    -1.0, 1.0
+                )
+                mix_angle = np.degrees(np.arccos(cos_angle))
+            else:
+                mix_angle = 0.0
+            mixing_score_values.append(float(mix_angle))
+            
+            # Null-space blending: posture + wrist orientation
+            q_current = data.qpos[:7]
+            q_posture_error = Q_NOMINAL - q_current
+            
+            # Wrist orientation control (via null-space)
+            if USE_WRIST_PID:
+                angular_correction = wrist_pid.update(tube_axis, a_liquid, dt)
+                JrJrT = Jr @ Jr.T
+                dq_wrist_goal = Jr.T @ np.linalg.solve(
+                    JrJrT + IK_LAMBDA_SQ * np.eye(3),
+                    angular_correction
+                )
+                
+                # Blend posture and wrist goals
+                blend_weight = WRIST_WEIGHT_LQR if USE_LQR_WEIGHT else WRIST_WEIGHT
+                null_space_goal = (blend_weight * dq_wrist_goal + 
+                                   (1.0 - blend_weight) * NULL_GAIN * q_posture_error)
+            else:
+                # Pure posture control
+                null_space_goal = NULL_GAIN * q_posture_error
+            
+            # Project blended goal into null-space
+            dq = dq + null_proj @ null_space_goal
 
-            # Target joint position = current + IK_GAIN * dq
+            # Task-space PID feedback (outer-loop position correction)
             q_des = data.qpos[:7] + IK_GAIN * dq
+            
+            if USE_TASK_SPACE_PID:
+                correction = task_pid.update(dx, dt)
+                q_des += J.T @ correction * dt
+            else:
+                _ = task_pid.update(dx, dt)
 
-            # ── 5. SEND TO INNER-LOOP ACTUATORS ──────────────────
-            data.ctrl[:7] = q_des
-
-            if model.nu >= 9:
+            # Joint-level PID controller to track desired positions
+            dq_current = data.qvel[:7]
+            tau = joint_pid.update(data.qpos[:7], q_des, dq_current, dt)
+            
+            # Send torque commands to robot actuators
+            data.ctrl[:7] = tau
+            
+            # Gripper is controlled via tendon (actuator7)
+            if model.nu >= 8:
                 data.ctrl[7] = gripper_w
-                data.ctrl[8] = gripper_w
 
             # ── 6. STEP PHYSICS ───────────────────────────────────
             mujoco.mj_step(model, data)
 
-            # ── 7. UPDATE HISTORY ─────────────────────────────────
-            prev_vel = cur_vel
-            prev_acc = acc
+            # ── 7. UPDATE TRACKING ────────────────────────────────
+            # (no longer tracking acceleration for jerk)
             sim_t   += dt
 
             # ── 8. LOGGING ────────────────────────────────────────
-            # Check if we've reached a trajectory sample point
-            while next_sample_idx < len(trajectory_sample_times) and t_eff >= trajectory_sample_times[next_sample_idx]:
-                sample_time = trajectory_sample_times[next_sample_idx]
-                desired_xyz = full_trajectory[next_sample_idx]
-                actual_xyz = data.xpos[hand_id].copy()
-                error = np.linalg.norm(desired_xyz - actual_xyz)
-                
-                print(
-                    f"{next_sample_idx:7d} | {sample_time:7.2f} | "
-                    f"[{desired_xyz[0]:7.4f}, {desired_xyz[1]:7.4f}, {desired_xyz[2]:7.4f}] | "
-                    f"[{actual_xyz[0]:7.4f}, {actual_xyz[1]:7.4f}, {actual_xyz[2]:7.4f}] | {error:7.4f}"
-                )
-                next_sample_idx += 1
-            
             phase_idx = int(np.searchsorted(traj.boundaries, t_eff, side="right"))
             phase_idx = min(phase_idx, len(PHASES) - 1)
             
             # Print phase details when phase changes
             if phase_idx != prev_phase_idx:
+                task_pid.reset()
+                joint_pid.reset()
+                wrist_pid.reset()
                 phase = PHASES[phase_idx]
                 print(
                     f"\n>>> PHASE {phase_idx + 1}: {phase['name']}\n"
@@ -282,18 +484,65 @@ def main():
                 )
                 prev_phase_idx = phase_idx
             
-            # Print progress every 200 steps
-            if int(sim_t / dt) % 200 == 0:
+            # Print progress every 100 steps (more frequent)
+            if int(sim_t / dt) % 100 == 0:
+                error_mag = np.linalg.norm(dx) if 'dx' in locals() else 0.0
+                tilt_error = wrist_pid.compute_error(tube_axis, a_liquid)
+                tilt_deg = np.degrees(np.linalg.norm(tilt_error))
+                mix_angle_ref = np.degrees(np.arccos(np.clip(
+                    np.dot(tube_axis, a_liquid / np.linalg.norm(a_liquid)),
+                    -1.0, 1.0
+                ))) if np.linalg.norm(a_liquid) > 1e-9 else 0.0
+                
+                # Print all joint angles
+                joint_angles = np.degrees(data.qpos[:7])
+                joints_str = " | ".join([f"J{i+1}={ang:7.2f}°" for i, ang in enumerate(joint_angles)])
+                
                 print(
                     f"sim={sim_t:6.2f}s | t_eff={t_eff:6.2f}s | "
-                    f"jerk={jerk_mag:7.3f} m/s³ | scale={t_scale:.2%} | "
-                    f"phase={PHASES[phase_idx]['name']}"
+                    f"pos_err={error_mag:.4f}m | "
+                    f"mix_angle={mix_angle_ref:6.1f}° | "
+                    f"a_eff={np.linalg.norm(a_effective):.2f}m/s²"
                 )
+                print(f"  Joints: {joints_str}")
+            
+            # ── Collect tilt error statistics ───────────────────────
+            tilt_error = wrist_pid.compute_error(tube_axis, a_liquid)
+            tilt_error_values.append(np.degrees(np.linalg.norm(tilt_error)))
 
             viewer.sync()
 
     if os.path.exists(ENV_XML):
         os.remove(ENV_XML)
+    
+    # ── PRINT STATISTICS ──────────────────────────────────────────
+    speed_array = np.array(speed_values)
+    pos_error_array = np.array(pos_error_values)
+    tilt_error_array = np.array(tilt_error_values)
+    mixing_score_array = np.array(mixing_score_values)
+    
+    print("\n" + "="*70)
+    pid_status = []
+    if USE_TASK_SPACE_PID:
+        pid_status.append("TaskSpace-PID")
+    if USE_WRIST_PID:
+        pid_status.append("Wrist-PID")
+    status_str = " + ".join(pid_status) if pid_status else "IK-feedforward only"
+    print(f"TRAJECTORY STATISTICS ({status_str})")
+    print("="*70)
+    print(f"Total simulation time:     {sim_t:.2f} s")
+    print(f"Total trajectory time:     {traj.total_time:.2f} s")
+    print(f"\nAverage EE speed:          {np.mean(speed_array):.4f} m/s")
+    print(f"Max EE speed:              {np.max(speed_array):.4f} m/s")
+    print(f"\nAverage position error:    {np.mean(pos_error_array):.6f} m")
+    print(f"Max position error:        {np.max(pos_error_array):.6f} m")
+    print(f"\nAverage tube tilt error:   {np.mean(tilt_error_array):.2f}°")
+    print(f"Max tube tilt error:       {np.max(tilt_error_array):.2f}°")
+    print(f"\nAverage liquid mixing angle: {np.mean(mixing_score_array):.2f}°")
+    print(f"Max liquid mixing angle:     {np.max(mixing_score_array):.2f}°")
+    print(f"Integrated mixing score:     {np.sum(mixing_score_array) * dt:.2f}°·s")
+    print("="*70 + "\n")
+    
     print("Trajectory complete.")
 
 
