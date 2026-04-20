@@ -25,7 +25,7 @@ NULL_GAIN = 0.5  # how strongly to pull toward nominal pose
 
 # Wrist orientation control (tube alignment with gravity)
 USE_WRIST_PID = False          # toggle wrist orientation control on/off
-USE_LQR_WEIGHT = True         # use LQR-computed weight for null-space blending
+USE_LQR_WEIGHT = False         # use LQR-computed weight for null-space blending
 ACCEL_LPFILTER_ALPHA = 0.03   # low-pass filter on acceleration measurement (lower=more smoothing)
 
 # Liquid inertia model (first-order lag in reorientation)
@@ -324,7 +324,7 @@ def main():
             filtered_ee_accel = (ACCEL_LPFILTER_ALPHA * ee_accel_raw + 
                                 (1.0 - ACCEL_LPFILTER_ALPHA) * filtered_ee_accel)
             
-            a_effective = g + filtered_ee_accel   # what the liquid "feels" (smoothed)
+            a_effective = g - filtered_ee_accel   # what the liquid "feels" (smoothed)
             
             # ── LIQUID INERTIA MODEL ─────────────────────────────────────
             # Liquid doesn't instantly reorient; it lags behind a_effective
