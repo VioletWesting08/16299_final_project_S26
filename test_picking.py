@@ -24,8 +24,8 @@ Q_NOMINAL = np.array([0.0, -0.3, 0.0, -1.8, 0.0, 1.5, 0.75])  # comfortable Fran
 NULL_GAIN = 0.5  # how strongly to pull toward nominal pose
 
 # Wrist orientation control (tube alignment with gravity)
-USE_WRIST_PID = True          # toggle wrist orientation control on/off
-USE_LQR_WEIGHT = False         # use LQR-computed weight for null-space blending
+USE_WRIST_PID = False          # toggle wrist orientation control on/off
+USE_LQR_WEIGHT = True         # use LQR-computed weight for null-space blending
 ACCEL_LPFILTER_ALPHA = 0.03   # low-pass filter on acceleration measurement (lower=more smoothing)
 
 # Liquid inertia model (first-order lag in reorientation)
@@ -105,67 +105,28 @@ class JointPIDController:
 
 
 # ═══════════════════════════════════════════════════════════════
-# WRIST ORIENTATION BIAS (slow gravity alignment, no oscillation)
+# MIXING PID (closed-loop wrist control on mixing angle)
 # ═══════════════════════════════════════════════════════════════
-class WristOrientationBias:
-    """Slowly accumulate wrist orientation to align tube with settled gravity."""
-    def __init__(self):
-        self.integration_rate = 0.01
-        self.bias_accumulator = np.zeros(3)
+class MixingPID:
+    """
+    Sensor:     theta_mix = angle between tube axis and a_liquid
+    Setpoint:   0 degrees (tube aligned with liquid settlement)
+    Output:     angular correction magnitude fed into null-space controller
+    """
+    def __init__(self, kp=0.5, ki=0.01, kd=0.1):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.integral   = 0.0
+        self.prev_error = 0.0
 
-    def reset(self):
-        self.bias_accumulator[:] = 0.0
-
-    def compute_error(self, tube_axis: np.ndarray, a_liquid: np.ndarray) -> np.ndarray:
-        """Compute angle error between tube and liquid settlement direction."""
-        a_liq_norm = np.linalg.norm(a_liquid)
-        if a_liq_norm < 1e-6:
-            return np.zeros(3)
-        z_desired = a_liquid / a_liq_norm
-        z_actual = tube_axis / np.linalg.norm(tube_axis)
-
-        cross = np.cross(z_actual, z_desired)
-        dot = np.clip(np.dot(z_actual, z_desired), -1.0, 1.0)
-        angle = np.arccos(dot)
-
-        if np.linalg.norm(cross) < 1e-9:
-            return np.zeros(3)
-
-        return (cross / np.linalg.norm(cross)) * angle
-
-    def compute_bias_direction(self, tube_axis: np.ndarray, a_liquid: np.ndarray) -> np.ndarray:
-        """
-        One-step bias: where should we rotate toward to align with a_liquid?
-        Returns rotation axis scaled by desired rotation magnitude.
-        """
-        a_liq_norm = np.linalg.norm(a_liquid)
-        if a_liq_norm < 1e-6:
-            return np.zeros(3)
-        
-        z_desired = a_liquid / a_liq_norm   # where liquid has settled
-        z_actual = tube_axis / np.linalg.norm(tube_axis)
-
-        # Rotation axis: perpendicular from actual to desired
-        cross = np.cross(z_actual, z_desired)
-        dot = np.clip(np.dot(z_actual, z_desired), -1.0, 1.0)
-        
-        if np.linalg.norm(cross) < 1e-9:
-            return np.zeros(3)  # already aligned
-
-        # Return small step toward desired orientation
-        return cross / np.linalg.norm(cross)
-
-    def update(self, tube_axis: np.ndarray, a_liquid: np.ndarray, dt: float) -> np.ndarray:
-        """Accumulate wrist bias toward gravity alignment."""
-        bias_direction = self.compute_bias_direction(tube_axis, a_liquid)
-        bias_step = self.integration_rate * bias_direction * dt
-        self.bias_accumulator += bias_step
-        
-        bias_norm = np.linalg.norm(self.bias_accumulator)
-        if bias_norm > np.radians(45):
-            self.bias_accumulator *= np.radians(45) / bias_norm
-        
-        return self.bias_accumulator / max(dt, 1e-3)
+    def update(self, theta_mix_deg: float, dt: float) -> float:
+        """Compute PID output for wrist correction magnitude."""
+        error           = theta_mix_deg   # setpoint is 0
+        self.integral  += error * dt
+        deriv           = (error - self.prev_error) / max(dt, 1e-9)
+        self.prev_error = error
+        return self.kp*error + self.ki*self.integral + self.kd*deriv
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -278,7 +239,7 @@ def main():
     hand_id  = model.body("hand").id
     task_pid = TaskSpacePID()
     joint_pid = JointPIDController(ndof=7)
-    wrist_pid = WristOrientationBias()
+    wrist_pid = MixingPID(kp=0.5, ki=0.01, kd=0.1)
     traj     = TrajectorySampler(PHASES)
     
     # For finite-difference acceleration estimation + filtering
@@ -402,7 +363,7 @@ def main():
             hand_rot  = data.xmat[hand_id].reshape(3, 3)
             tube_axis = hand_rot[:, 2]
             
-            # Compute mixing angle
+            # Compute mixing angle (feedback signal for closed-loop control)
             norm_tube = np.linalg.norm(tube_axis)
             norm_liq  = np.linalg.norm(a_liquid)
             if norm_tube > 1e-9 and norm_liq > 1e-9:
@@ -421,11 +382,23 @@ def main():
             
             # Wrist orientation control (via null-space)
             if USE_WRIST_PID:
-                angular_correction = wrist_pid.update(tube_axis, a_liquid, dt)
+                # Closed-loop control: use mixing angle as feedback
+                correction_magnitude = wrist_pid.update(mix_angle, dt)
+                
+                # Compute rotation axis toward alignment (tube → liquid direction)
+                z_desired = a_liquid / norm_liq if norm_liq > 1e-9 else np.array([0., 0., -1.])
+                z_actual = tube_axis / norm_tube if norm_tube > 1e-9 else np.array([0., 0., 1.])
+                rotation_axis = np.cross(z_actual, z_desired)
+                
+                # Scale rotation axis by PID correction magnitude
+                if np.linalg.norm(rotation_axis) > 1e-9:
+                    rotation_axis = rotation_axis / np.linalg.norm(rotation_axis) * correction_magnitude
+                
+                # Map rotation axis to joint velocity via rotational Jacobian
                 JrJrT = Jr @ Jr.T
                 dq_wrist_goal = Jr.T @ np.linalg.solve(
                     JrJrT + IK_LAMBDA_SQ * np.eye(3),
-                    angular_correction
+                    rotation_axis
                 )
                 
                 # Blend posture and wrist goals
@@ -474,7 +447,7 @@ def main():
             if phase_idx != prev_phase_idx:
                 task_pid.reset()
                 joint_pid.reset()
-                wrist_pid.reset()
+                # Note: MixingPID doesn't require explicit reset (stateless gains)
                 phase = PHASES[phase_idx]
                 print(
                     f"\n>>> PHASE {phase_idx + 1}: {phase['name']}\n"
@@ -487,12 +460,8 @@ def main():
             # Print progress every 100 steps (more frequent)
             if int(sim_t / dt) % 100 == 0:
                 error_mag = np.linalg.norm(dx) if 'dx' in locals() else 0.0
-                tilt_error = wrist_pid.compute_error(tube_axis, a_liquid)
-                tilt_deg = np.degrees(np.linalg.norm(tilt_error))
-                mix_angle_ref = np.degrees(np.arccos(np.clip(
-                    np.dot(tube_axis, a_liquid / np.linalg.norm(a_liquid)),
-                    -1.0, 1.0
-                ))) if np.linalg.norm(a_liquid) > 1e-9 else 0.0
+                # mix_angle already computed above; reuse it
+                mix_angle_ref = mix_angle
                 
                 # Print all joint angles
                 joint_angles = np.degrees(data.qpos[:7])
@@ -506,9 +475,9 @@ def main():
                 )
                 print(f"  Joints: {joints_str}")
             
-            # ── Collect tilt error statistics ───────────────────────
-            tilt_error = wrist_pid.compute_error(tube_axis, a_liquid)
-            tilt_error_values.append(np.degrees(np.linalg.norm(tilt_error)))
+            # ── Collect mixing angle statistics ───────────────────────
+            # mix_angle already computed above; track it as tilt/mixing error
+            tilt_error_values.append(float(mix_angle))
 
             viewer.sync()
 
