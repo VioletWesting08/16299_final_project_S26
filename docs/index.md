@@ -1,5 +1,7 @@
+
+*Alan Ramirez, Zoey You, Sarah Huang, Sophia Zhao*
+
 # 16299 Final Project: Centrifuge Tube Transporter
-Alan Ramirez, Zoey You, Sarah Huang, Sophia Zhao
 
 A feedback control algorithm for transporting a centrifuge tube containing separated liquid layers using a Franka Panda robotic arm while minimizing mixing.
 
