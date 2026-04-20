@@ -24,12 +24,12 @@ Q_NOMINAL = np.array([0.0, -0.3, 0.0, -1.8, 0.0, 1.5, 0.75])  # comfortable Fran
 NULL_GAIN = 0.5  # how strongly to pull toward nominal pose
 
 # Wrist orientation control (tube alignment with gravity)
-USE_WRIST_PID = False          # toggle wrist orientation control on/off
+USE_WRIST_PID = True          # toggle wrist orientation control on/off
 USE_LQR_WEIGHT = False         # use LQR-computed weight for null-space blending
 ACCEL_LPFILTER_ALPHA = 0.03   # low-pass filter on acceleration measurement (lower=more smoothing)
 
 # Liquid inertia model (first-order lag in reorientation)
-LIQUID_TAU = 1.0             # liquid reorientation time constant (seconds)
+LIQUID_TAU = 0.0             # liquid reorientation time constant (seconds)
 
 # Testing/validation options
 AGGRESSIVE_TRANSPORT = True   # fast transport phase (0.3s vs 1.0s) for stress-testing
@@ -118,6 +118,11 @@ class MixingPID:
         self.ki = ki
         self.kd = kd
         self.integral   = 0.0
+        self.prev_error = 0.0
+
+    def reset(self):
+        """Reset integral and derivative state."""
+        self.integral = 0.0
         self.prev_error = 0.0
 
     def update(self, theta_mix_deg: float, dt: float) -> float:
@@ -374,14 +379,21 @@ def main():
                 mix_angle = np.degrees(np.arccos(cos_angle))
             else:
                 mix_angle = 0.0
-            mixing_score_values.append(float(mix_angle))
+            
+            # Only count mixing angle during grasping/transport phases (3-6, indices 2-5)
+            # We'll determine phase_idx right after for gating, so tentatively collect; will filter if needed
+            # Actually, move phase calculation before this for cleaner gating
             
             # Null-space blending: posture + wrist orientation
             q_current = data.qpos[:7]
             q_posture_error = Q_NOMINAL - q_current
             
-            # Wrist orientation control (via null-space)
-            if USE_WRIST_PID:
+            # Determine phase for gating logic (move earlier for phase-aware control)
+            phase_idx = int(np.searchsorted(traj.boundaries, t_eff, side="right"))
+            phase_idx = min(phase_idx, len(PHASES) - 1)
+            
+            # Wrist orientation control only during grasping/transport phases (3-6, indices 2-5)
+            if USE_WRIST_PID and 2 <= phase_idx <= 5:
                 # Closed-loop control: use mixing angle as feedback
                 correction_magnitude = wrist_pid.update(mix_angle, dt)
                 
@@ -440,14 +452,13 @@ def main():
             sim_t   += dt
 
             # ── 8. LOGGING ────────────────────────────────────────
-            phase_idx = int(np.searchsorted(traj.boundaries, t_eff, side="right"))
-            phase_idx = min(phase_idx, len(PHASES) - 1)
+            # phase_idx already calculated above for phase-aware control
             
             # Print phase details when phase changes
             if phase_idx != prev_phase_idx:
                 task_pid.reset()
                 joint_pid.reset()
-                # Note: MixingPID doesn't require explicit reset (stateless gains)
+                wrist_pid.reset()  # clear integral state between phases
                 phase = PHASES[phase_idx]
                 print(
                     f"\n>>> PHASE {phase_idx + 1}: {phase['name']}\n"
@@ -475,9 +486,10 @@ def main():
                 )
                 print(f"  Joints: {joints_str}")
             
-            # ── Collect mixing angle statistics ───────────────────────
-            # mix_angle already computed above; track it as tilt/mixing error
-            tilt_error_values.append(float(mix_angle))
+            # Collect mixing metrics only during grasping/transport phases (3-6, indices 2-5)
+            if 2 <= phase_idx <= 5:
+                mixing_score_values.append(float(mix_angle))
+                tilt_error_values.append(float(mix_angle))
 
             viewer.sync()
 

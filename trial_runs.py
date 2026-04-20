@@ -1,14 +1,8 @@
 """
-run_trials.py
+trial_runs.py
 =============
-Batch trial runner for liquid-lag experiments on the Franka Panda robot.
-
-Runs 50 trials with USE_WRIST_PID=False  (no PID)
- and 50 trials with USE_WRIST_PID=True   (PID, no LQR)
-
-Each set of 50 trials linearly sweeps LIQUID_TAU from 0.0 s → 2.0 s.
-
-Results are saved to  trial_results.csv  (stdlib csv only).
+Sweep LIQUID_TAU from 0.0 → 2.0 seconds, running exact test_picking.py logic each time.
+Uses identical settings and controllers as test_picking.py.
 """
 
 import mujoco
@@ -102,6 +96,11 @@ class JointPIDController:
 class MixingPID:
     def __init__(self, kp=0.5, ki=0.01, kd=0.1):
         self.kp = kp; self.ki = ki; self.kd = kd
+        self.integral   = 0.0
+        self.prev_error = 0.0
+
+    def reset(self):
+        """Reset integral and derivative state."""
         self.integral   = 0.0
         self.prev_error = 0.0
 
@@ -226,7 +225,7 @@ def run_trial(liquid_tau: float, use_wrist_pid: bool) -> dict:
         prev_ee_vel       = cur_vel.copy()
         filtered_ee_accel = (ACCEL_LPFILTER_ALPHA * ee_accel_raw +
                              (1.0 - ACCEL_LPFILTER_ALPHA) * filtered_ee_accel)
-        a_effective = g + filtered_ee_accel
+        a_effective = g - filtered_ee_accel
 
         # Liquid inertia model — use trial's tau
         if liquid_tau > 1e-9:
@@ -269,13 +268,23 @@ def run_trial(liquid_tau: float, use_wrist_pid: bool) -> dict:
             mix_angle = np.degrees(np.arccos(cos_angle))
         else:
             mix_angle = 0.0
-        mixing_score_values.append(float(mix_angle))
+
+        # Determine phase for gating logic (move earlier)
+        phase_idx = min(
+            int(np.searchsorted(traj.boundaries, t_eff, side="right")),
+            len(PHASES) - 1
+        )
+        
+        # Only collect mixing metrics during grasping/transport phases (3-6, indices 2-5)
+        if 2 <= phase_idx <= 5:
+            mixing_score_values.append(float(mix_angle))
 
         # ── Null-space goal ─────────────────────────────────────
         q_current       = data.qpos[:7]
         q_posture_error = Q_NOMINAL - q_current
 
-        if use_wrist_pid:
+        # Wrist orientation control only during grasping/transport phases (3-6, indices 2-5)
+        if use_wrist_pid and 2 <= phase_idx <= 5:
             correction_magnitude = wrist_pid.update(mix_angle, dt)
             z_desired    = a_liquid / norm_liq if norm_liq > 1e-9 else np.array([0., 0., -1.])
             z_actual     = tube_axis / norm_tube if norm_tube > 1e-9 else np.array([0., 0., 1.])
@@ -321,6 +330,7 @@ def run_trial(liquid_tau: float, use_wrist_pid: bool) -> dict:
         if phase_idx != prev_phase_idx:
             task_pid.reset()
             joint_pid.reset()
+            wrist_pid.reset()
             prev_phase_idx = phase_idx
 
     # Clean up temp file
