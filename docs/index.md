@@ -97,6 +97,39 @@ Linearly interpolated lag (`LIQUID_TAU`) from 0.0 to 2.0 seconds across 50 trial
 
 ---
 
+## Kinematics Sweep: Full-Body Controller
+
+### Full-Body Result (New Pipeline)
+
+![Full-body kinematics result](../outputs/kinematics_full_body.gif)
+
+This run is selected from the new sweep pipeline, where each trial is scored with priority on tilt stability first, then trajectory tracking smoothness, then completion time.
+
+### Full-Body vs Previous Baselines
+
+Using the best trial from each sweep mode (`outputs/kinematics_sweep_full_body.csv` and `outputs/kinematics_sweep_full_body_only.csv`):
+
+| Metric | Full Body (task + wrist) | Full Body Only (task only) | Interpretation |
+|---|---:|---:|---|
+| Sim time (s) | 2.8020 | 2.8020 | Same completion speed |
+| Risk integral | 75421.2352 | 75652.6432 | Slightly smoother with wrist control |
+| Tilt integral (deg*s) | **9.5881** | **47.8189** | Major orientation improvement with wrist control |
+| Reach integral (m*s) | 0.3405 | 0.2501 | Better tilt came with a tracking tradeoff |
+| Score | **25536852.31** | **37066484.19** | Full body + wrist ranked better overall |
+
+For the `no_pid` baseline, the GIF still serves as the primary reference for behavior comparison. In this setting, the arm can complete motion but has less reliable alignment behavior during grasp/transport phases.
+
+### What Was Hard to Combine
+
+Combining all objectives in one controller turned out to be difficult:
+
+- Wrist-orientation correction and Cartesian tracking can fight each other, especially near grasp height.
+- Prioritizing "do not tilt" too aggressively can increase path-tracking error.
+- Speed pushes acceleration and jerk up, which can hurt both alignment and smoothness.
+- Practically, this required iterative tuning of gain scales, time scaling, and objective prioritization rather than one clean closed-form setting.
+
+---
+
 ## Replication
 
 ### Requirements
