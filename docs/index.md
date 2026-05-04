@@ -3,29 +3,48 @@
 
 # 16299 Final Project: Centrifuge Tube Transporter
 
-A feedback control algorithm for transporting a centrifuge tube containing separated liquid layers using a Franka Panda robotic arm while minimizing mixing.
+## Abstract
 
-
-<div style="display: flex; gap: 20px; justify-content: center;">
-  <div>
-    <h3>Without PID</h3>
-    <img src="no_pid_simulation(2).gif" width="400" />
-  </div>
-  <div>
-    <h3>With Wrist Orientation PID</h3>
-    <img src="pid_simulation(1).gif" width="400" />
-  </div>
-</div>
-
----
+This project focuses on implementing an algorithm for the transportation of centrifuge tubes using robotic arms. The system is  developed and tested in simulation using a Mujoco gym environment and a Franka arm library in Python, which allows for modeling the physics of the robotic arm. The implementation is evaluated against benchmarks that estimate the mixing of separated component after a centrifuge.
 
 ## Motivation
 
 Biology labs increasingly rely on robotic automation, but standard motion planning ignores the physics of sensitive payloads. Moving a centrifuge tube too aggressively mixes its separated layers, ruining the sample. This project considers these constraints to transport the tube as fast as possible while keeping mixing as low as possible using active feedback control.
 
----
 
-## How It Works
+
+## Methods : Kinematics
+
+### Control Architecture and Trajectory
+The kinematics approach utilizes a dual-loop PID control architecture to track a predefined sequence of spatial waypoints (Hover, Descend, Grasp, Lift, Transport, Place, Release). 
+
+* **Trajectory Generation**: To prevent sudden acceleration spikes that would disturb the payload, transitions between waypoints are governed by a 5th-order minimum-jerk polynomial. For a normalized time $\tau = t/\text{duration}$, the position scaling $s$ is calculated as:
+    $$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$$
+    The overall execution speed of these phases is parameterized by a tunable `time_scale`.
+* **Task-Space and Joint-Space Control**: A Task-Space PID controller minimizes the Cartesian error between the minimum-jerk trajectory and the end-effector's actual position. This 3D correction is mapped into the 7-DOF joint space using a damped pseudo-inverse Jacobian. This is combined with a null-space projection to keep the robot near a safe home posture ($Q_{\text{HOME}}$) without disrupting the end-effector task. Finally, a Joint-Space PD controller computes the necessary motor torques.
+
+### Active Slosh Compensation
+To minimize liquid mixing, the system mathematically models the internal liquid surface by tracking the **effective gravity vector**. This vector accounts for both standard gravity and the low-pass filtered acceleration of the end-effector, simulating the delayed sloshing motion of a viscous fluid.
+
+If active wrist compensation (`use_wrist_pid`) is enabled, the controller computes the cross product between the actual tube's Z-axis and the effective gravity vector. This rotational error is mapped directly to the wrist joints via the Jacobian transpose, allowing the robot to actively tilt the tube into curves to counteract lateral acceleration and keep the liquid surface flat relative to the tube opening.
+
+### Optimization Methodology
+To find the optimal balance between speed and stability, the system uses an automated grid sweep (`run_sweep`). It systematically evaluates combinations of PID gains (`kp_scale`, `kd_scale`, `task_kp`) and execution speeds (`time_scale`). Each configuration is evaluated using a weighted objective function:
+
+$$\text{Score} = w_{\text{tilt}} \cdot \text{Tilt} + w_{\text{reach}} \cdot \text{Reach} + w_{\text{risk}} \cdot \text{Risk} + w_{\text{time}} \cdot \text{Time}$$
+
+Lower scores indicate superior performance. The algorithm heavily penalizes liquid tilt and path deviation while rewarding faster simulation completion times.
+
+## Files
+
+- **`test_picking.py`**: Interactive simulator with real-time viewer. Runs one trial with configurable LIQUID_TAU and wrist PID gains.
+- **`record_test_picking.py`**: Offline video recorder. Generates MP4 of trajectory with custom camera angles for visualization.
+- **`trial_runs.py`**: Batch sweep over LIQUID_TAU (0.0→2.0s). Runs multiple trials and saves stats to CSV.
+- **`kinematics.py`**: Automated grid sweep and trajectory simulation focusing on minimum-jerk motion and active slosh compensation.
+
+
+
+## Methods : Partial PID
 
 ### Mixing Metric
 
@@ -82,6 +101,39 @@ dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
 ---
 
 ## Results
+
+<div style="display: flex; gap: 20px; justify-content: center; flex-wrap: wrap;">
+  <div>
+    <h3>No PID Control</h3>
+    <p><i>[Insert kinematics_no_pid.gif]</i></p>
+  </div>
+  <div>
+    <h3>Joint PD Only</h3>
+    <p><i>[Insert kinematics_joint_pd_only.gif]</i></p>
+  </div>
+  <div>
+    <h3>Full Body Only (No Wrist)</h3>
+    <p><i>[Insert kinematics_full_body_only.gif]</i></p>
+  </div>
+  <div>
+    <h3>Full Body + Wrist Compensation</h3>
+    <p><i>[Insert kinematics_full_body.gif]</i></p>
+  </div>
+</div>
+
+
+<div style="display: flex; gap: 20px; justify-content: center;">
+  <div>
+    <h3>Without PID</h3>
+    <img src="no_pid_simulation(2).gif" width="400" />
+  </div>
+  <div>
+    <h3>With Wrist Orientation PID</h3>
+    <img src="pid_simulation(1).gif" width="400" />
+  </div>
+</div>
+
+---
 
 Linearly interpolated lag (`LIQUID_TAU`) from 0.0 to 2.0 seconds across 50 trials each with and without wrist orientation PID control.
 
