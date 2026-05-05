@@ -1,4 +1,4 @@
-# README for 16299 Final Project
+# 16299 Final Project: Centrifuge Tube Transporter
 
 ## WEBSITE
 https://violetwesting08.github.io/16299_final_project_S26/
