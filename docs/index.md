@@ -104,13 +104,14 @@ Linearly interpolated lag (`LIQUID_TAU`) from 0.0 to 2.0 seconds across 50 trial
 
 | Metric                        | No PID/orientation control | With Wrist PID |
 | ----------------------------- | ------------ | -------------- |
-| Mean avg EE speed (m/s)       | 0.3292       | 0.3648         |
-| Mean max EE speed (m/s)       | 1.3071       | 1.4695         |
-| Mean avg pos error (m)        | 0.0668       | 0.0783         |
-| Mean max pos error (m)        | 0.3067       | 0.3480         |
-| **Mean avg mix angle (°)**    | **34.8832**  | **14.8218**    |
-| **Mean max mix angle (°)**    | **44.6225**  | **42.1592**    |
-| **Mean integrated mix (°·s)** | **115.1844** | **48.9414**    |
+| Mean avg EE speed (m/s)       | 0.3375       | 0.3923         |
+| Mean max EE speed (m/s)       | 1.2812       | 1.5466         |
+| Mean avg pos error (m)        | 0.0765       | 0.0903         |
+| Mean max pos error (m)        | 0.3466       | 0.3567         |
+| **Mean avg mix angle (°)**    | **25.4661**  | **12.0596**    |
+| **Mean max mix angle (°)**    | **36.1911**  | **24.6687**    |
+| **Mean integrated mix (°·s)** | **160.4873** | **75.9997**    |
+
 
 ---
 
