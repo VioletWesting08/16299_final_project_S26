@@ -14,7 +14,7 @@ However, this can be problematic. A centrifuge tube containing two separated liq
 The goal of this project is to explore how feedback control can help develop these systems with those constraints in mind. We implement a feedback controller that runs on top of a conventional trajectory planner and continuously corrects the tube orientation so that the tube's long axis remains aligned with the direction of the effective acceleration the liquid experiences. Intuitively, the controller tries to make the tube behave from the liquid's perspective like a tube that is simply standing in gravity, even while the arm is moving along a trajectory. We evaluate this idea in simulation on a Franka Panda 7-DOF arm in MuJoCo, comparing transport with and without the PID layer.
 
 ---
-## Methods: Kinematics### Trajectory Generation
+## Methods: Kinematics Trajectory Generation
 
 Transitions between the 7 waypoints (Hover, Descend, Grasp, Lift, Transport, Place,
 Release) are controlled by a 5th-order minimum-jerk polynomial (Macfarlane & Croft 2003):
