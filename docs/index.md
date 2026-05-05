@@ -188,12 +188,9 @@ For the second point, this is still an ongoing question. We decided to go with o
 Lastly, issues arose with using Mujoco itself for picking up objects. We look to translate simulation to real Franka arms in the future. Future work is discussed below.
 
 ---
+## Conclusion
 
-## Future Work
-
-- **RL**: use reinforcement learning with a mixing penalty in the reward function to find optimal transport trajectories, combined with PID for fine-grained EE control
-- **Real hardware**: transfer to a physical Franka Panda arm; primary challenge is noisy acceleration estimation and tube pickup calibration
-- **Fluid simulation**: replace the proxy metric with particle-based simulation for ground-truth mixing measurement
+We find that using PID to control tuble angle can be a potentially useful addition to laboratory robots. Adding a PID layer for the wrist joint specifically that is injected into the null space of regular pose can yield less liquid mixing (according to metrics defined by angle of the tube and liquid) while simultaneously not affecting the PID of the joints themselves for trajectory following. These results imply that considering centrifuge tube transport could be a well-scoped task for robot manipulators even though these payloads can be sensitive. 
 
 ---
 
