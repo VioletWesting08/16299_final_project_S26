@@ -39,5 +39,7 @@ Thumbs.db
 # Python version
 .python-version
 
-# Data file
-.outputs/
+# Output folder
+outputs/
+
+MUJOCO_LOG.txt

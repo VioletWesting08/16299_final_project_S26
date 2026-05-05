@@ -5,50 +5,81 @@
 
 ## Abstract
 
-This project focuses on implementing an algorithm for the transportation of centrifuge tubes using robotic arms. The system is  developed and tested in simulation using a Mujoco gym environment and a Franka arm library in Python, which allows for modeling the physics of the robotic arm. The implementation is evaluated against benchmarks that estimate the mixing of separated component after a centrifuge.
+Automated handling of biological samples is increasingly common in modern chemistry and biology laboratories, but standard robotic motion planners are largely agnostic to the fluid dynamics inside the containers they transport. For samples such as density-gradient centrifuge tubes, the jerk, acceleration, and orientation profile of the end effector during transport directly determines whether carefully separated liquid layers remain intact or re-mix. 
+
+In this project, we implement a feedback control pipeline on a simulated Franka Panda 7-DOF arm in MuJoCo that transports a centrifuge tube while keeping its long axis aligned with the effective acceleration vector experienced by the liquid, so that the tube tilts with the trajectory rather than against it. The pipeline combines minimum-jerk 5th-order-polynomial trajectory planning, damped least-squares inverse (differential) kinematics, and a wrist-orientation PID controller injected through the null space of the IK problem. We define a mix angle, the error between the tube's z-axis and a lagged effective acceleration vector, as both the evaluation metric and the PID error signal. Across repeated trials, enabling the wrist PID reduced the mean average mix angle from 34.4 deg to 14.2 deg and the time-integrated mix from 96.4 deg-s to 39.7 deg-s, with comparable end-effector tracking error. These results are also compared against a no-PID inverse kinematics solution considering both end effector position and orientation, still showing improvement compared to inverse differential kinematics alone. These results show that a feedback layer exploiting kinematic redundancy is potentially useful to substantially reduce liquid disturbance during transport without modifying the underlying trajectory planner.
 
 ## Motivation
 
-Biology labs increasingly rely on robotic automation, but standard motion planning ignores the physics of sensitive payloads. Moving a centrifuge tube too aggressively mixes its separated layers, ruining the sample. This project considers these constraints to transport the tube as fast as possible while keeping mixing as low as possible using active feedback control.
+Robotic automation is expanding into chemistry and biology laboratories, where manipulators are increasingly used for tasks that were previously performed by hand: pipetting, plate handling, sample transfer, and tube transport between instruments such as centrifuges, incubators, and analyzers. Commercial systems are being developed for these purposes constantly. The promise of this automation is throughput and reproducibility, but it rests on an assumption that the robot can move sample containers without disturbing what is inside them.
 
+However, this can be problematic. A centrifuge tube containing two separated liquid layers is highly sensitive to the dynamics of how it is moved. Sharp accelerations, abrupt direction changes, and orientation errors during transport induce sloshing that can re-mix layers and destroy the work the centrifuge has just done. Standard motion planners optimize for kinematic objectives such as path length, smoothness in joint space, or end-effector tracking error, do not necessarily have consideration of fluid mechanics within the end-effector object, of the direction of the effective acceleration vector inside the tube, or of how tube orientation should evolve in response to that vector.
 
+The goal of this project is to explore how feedback control can help develop these systems with those constraints in mind. We implement a feedback controller that runs on top of a conventional trajectory planner and continuously corrects the tube orientation so that the tube's long axis remains aligned with the direction of the effective acceleration the liquid experiences. Intuitively, the controller tries to make the tube behave from the liquid's perspective like a tube that is simply standing in gravity, even while the arm is moving along a trajectory. We evaluate this idea in simulation on a Franka Panda 7-DOF arm in MuJoCo, comparing transport with and without the PID layer.
 
-## Methods : Kinematics
+---
+## Methods: Kinematics
 
-### Control Architecture and Trajectory
-The kinematics approach utilizes a dual-loop PID control architecture to track a predefined sequence of spatial waypoints (Hover, Descend, Grasp, Lift, Transport, Place, Release). 
+### Trajectory Generation
 
-* **Trajectory Generation**: To prevent sudden acceleration spikes that would disturb the payload, transitions between waypoints are governed by a 5th-order minimum-jerk polynomial. For a normalized time $\tau = t/\text{duration}$, the position scaling $s$ is calculated as:
-    $$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$$
-    The overall execution speed of these phases is parameterized by a tunable `time_scale`.
-* **Task-Space and Joint-Space Control**: A Task-Space PID controller minimizes the Cartesian error between the minimum-jerk trajectory and the end-effector's actual position. This 3D correction is mapped into the 7-DOF joint space using a damped pseudo-inverse Jacobian. This is combined with a null-space projection to keep the robot near a safe home posture ($Q_{\text{HOME}}$) without disrupting the end-effector task. Finally, a Joint-Space PD controller computes the necessary motor torques.
+Transitions between the 7 waypoints (Hover, Descend, Grasp, Lift, Transport, Place,
+Release) are controlled by a 5th-order minimum-jerk polynomial.
 
-### Active Slosh Compensation
-To minimize liquid mixing, the system mathematically models the internal liquid surface by tracking the **effective gravity vector**. This vector accounts for both standard gravity and the low-pass filtered acceleration of the end-effector, simulating the delayed sloshing motion of a viscous fluid.
+**Minimum-jerk trajectory** (Macfarlane & Croft 2003):
+```
+x(t) = a₀ + a₁t + a₂t² + a₃t³ + a₄t⁴ + a₅t⁵
+a₃ = 10(xf-x₀)/T³,  a₄ = -15(xf-x₀)/T⁴,  a₅ = 6(xf-x₀)/T⁵
+```
 
-If active wrist compensation (`use_wrist_pid`) is enabled, the controller computes the cross product between the actual tube's Z-axis and the effective gravity vector. This rotational error is mapped directly to the wrist joints via the Jacobian transpose, allowing the robot to actively tilt the tube into curves to counteract lateral acceleration and keep the liquid surface flat relative to the tube opening.
+Overall execution speed is controlled by a tunable `time_scale` parameter that uniformly
+scales all phase durations.
 
-### Optimization Methodology
-To find the optimal balance between speed and stability, the system uses an automated grid sweep (`run_sweep`). It systematically evaluates combinations of PID gains (`kp_scale`, `kd_scale`, `task_kp`) and execution speeds (`time_scale`). Each configuration is evaluated using a weighted objective function:
+### Trajectory Following
 
-$$\text{Score} = w_{\text{tilt}} \cdot \text{Tilt} + w_{\text{reach}} \cdot \text{Reach} + w_{\text{risk}} \cdot \text{Risk} + w_{\text{time}} \cdot \text{Time}$$
+At each timestep, the Cartesian position error dx between the trajectory and the
+actual end-effector position is resolved into joint velocities via damped
+least-squares.
 
-Lower scores indicate superior performance. The algorithm heavily penalizes liquid tilt and path deviation while rewarding faster simulation completion times.
+**Damped least-squares IK** (Buss 2009) converts Cartesian targets to joint angles without singularity blowup:
+```
+dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
+```
 
-## Files
+The 7-DOF arm tracking a 3D position target leaves a 4-dimensional null space,
+which is exploited to simultaneously pull the arm toward a safe nominal posture
+Q_HOME without disturbing end-effector tracking (Liégeois 1977).
 
-- **`test_picking.py`**: Interactive simulator with real-time viewer. Runs one trial with configurable LIQUID_TAU and wrist PID gains.
-- **`record_test_picking.py`**: Offline video recorder. Generates MP4 of trajectory with custom camera angles for visualization.
-- **`trial_runs.py`**: Batch sweep over LIQUID_TAU (0.0→2.0s). Runs multiple trials and saves stats to CSV.
-- **`kinematics.py`**: Automated grid sweep and trajectory simulation focusing on minimum-jerk motion and active slosh compensation.
-
-
+The resulting desired joint positions are then tracked by a joint-level PD controller
+that converts position and velocity errors into motor torques.
 
 ## Methods : Partial PID
 
+### "Separating" the Wrist PID
+
+Primary task (position): Damped least-squares IK solves for joint velocities dq that move the TCP to the target XYZ:
+```
+dq = J.T @ solve(J@J.T + λ²I, dx)
+```
+
+Null-space projector: Any joint motion in the null-space of J doesn't disturb the primary position task:
+```
+null_proj = I - J_pinv @ J
+dq_total = dq + null_proj @ null_space_goal
+```
+
+Wrist PID: The feedback signal is mix_angle, described in detail below. The PID targets this to zero. Its output is a correction magnitude that scales a rotation axis pointing from current tube orientation toward desired alignment. The resulting pose is then blended (using a weighted average) with a pose that is "nominal" for the Franka arm (aka. the most comfortable position for the Franka arm to be in) and injected into the null-space:
+```
+null_space_goal = (blend_weight * dq_wrist_goal + 
+                   (1.0 - blend_weight) * NULL_GAIN * q_posture_error)
+```
+
+NOTES FROM IN-CLASS PRESENTATION: This is not explicitly solving for inverse kinematics with a target end-effector orientation (as noted in the in-class presentation). The wrist's joint is not decoupled, it is just not targeting orientation using IK. The robot arm is still acting as a 7-dof arm, it just only targets XYZ end-effector position and uses the null space to target a specific joint angle pose. This is different from straight up inverse kinematics with a hard-enforced desired end-effector orientation.
+
+As a baseline, regular inverse kinematics with a 6x7 Jacobian is implemented as a baseline to test against this wrist PID experiment. 
+
 ### Mixing Metric
 
-Liquid simulation is tricky. It is instead dealt with by defining a proxy metric:
+We found great troubles in trying to simulate liquids in our environment. It is instead dealt with by defining a proxy metric:
 
 - `tube_axis`: which way the tube is pointing (gripper Z-axis)
 - `a_effective`: gravity + end-effector acceleration (what the liquid feels)
@@ -63,7 +94,7 @@ mix_angle = arccos(dot(tube_axis, a_liquid / |a_liquid|))   [degrees]
 
 ---
 
-### System Architecture
+## System Architecture
 ![system architecture](sys_arch_tube.png)
 
 **Three layers:**
@@ -74,62 +105,23 @@ mix_angle = arccos(dot(tube_axis, a_liquid / |a_liquid|))   [degrees]
 
 3. **Joint PID**: custom torque controller overriding MuJoCo's default gains: `τ = Kp*(q_des - q) - Kd*q̇`
 
----
-
-### Key Implementation Details
-
-**Minimum-jerk trajectory** (Flash & Hogan 1985, Macfarlane & Croft 2003):
-```
-x(t) = a₀ + a₁t + a₂t² + a₃t³ + a₄t⁴ + a₅t⁵
-a₃ = 10(xf-x₀)/T³,  a₄ = -15(xf-x₀)/T⁴,  a₅ = 6(xf-x₀)/T⁵
-```
-
-**Damped least-squares IK** (Buss 2009) converts Cartesian targets to joint angles without singularity blowup:
-```
-dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
-```
-
-**Null-space injection** (Liégeois 1977) lets wrist orientation control run without fighting the position task.
-
-
-## Files
-
-- **`test_picking.py`**: Interactive simulator with real-time viewer. Runs one trial with configurable LIQUID_TAU and wrist PID gains.
-- **`record_test_picking.py`**: Offline video recorder. Generates MP4 of trajectory with custom camera angles for visualization.
-- **`trial_runs.py`**: Batch sweep over LIQUID_TAU (0.0→2.0s). Runs multiple trials and saves stats to CSV.
 
 ---
 
 ## Results
 
-<div style="display: flex; gap: 20px; justify-content: center; flex-wrap: wrap;">
-  <div>
-    <h3>No PID Control</h3>
-    <p><i>[Insert kinematics_no_pid.gif]</i></p>
-  </div>
-  <div>
-    <h3>Joint PD Only</h3>
-    <p><i>[Insert kinematics_joint_pd_only.gif]</i></p>
-  </div>
-  <div>
-    <h3>Full Body Only (No Wrist)</h3>
-    <p><i>[Insert kinematics_full_body_only.gif]</i></p>
-  </div>
-  <div>
-    <h3>Full Body + Wrist Compensation</h3>
-    <p><i>[Insert kinematics_full_body.gif]</i></p>
-  </div>
-</div>
-
-
 <div style="display: flex; gap: 20px; justify-content: center;">
   <div>
-    <h3>Without PID</h3>
-    <img src="no_pid_simulation(2).gif" width="400" />
+    <h3>Without PID/orientation tracking at all</h3>
+    <img src="nopid.gif" width="400" />
   </div>
   <div>
-    <h3>With Wrist Orientation PID</h3>
-    <img src="pid_simulation(1).gif" width="400" />
+    <h3>With regular IDK (position + orientation)</h3>
+    <img src="ik.gif" width="400" />
+  </div>
+  <div>
+    <h3>With Wrist Orientation PID feedback loop</h3>
+    <img src="pid.gif" width="400" />
   </div>
 </div>
 
@@ -137,27 +129,40 @@ dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
 
 Linearly interpolated lag (`LIQUID_TAU`) from 0.0 to 2.0 seconds across 50 trials each with and without wrist orientation PID control.
 
-| Metric | No Wrist PID | With Wrist PID |
-|---|---|---|
-| Mean avg EE speed (m/s) | 0.3726 | 0.4076 |
-| Mean max EE speed (m/s) | 1.2977 | 1.4255 |
-| Mean avg pos error (m) | 0.0781 | 0.0843 |
-| Mean max pos error (m) | 0.3246 | 0.3338 |
-| **Mean avg mix angle (°)** | **34.41** | **14.09** |
-| **Mean max mix angle (°)** | **43.80** | **41.51** |
-| **Mean integrated mix (°·s)** | **96.42** | **39.49** |
+| Metric                        | No PID/orientation control | 6D IK baseline | With Wrist PID |
+| ----------------------------- | -------------------- | ----------- | -------------- |
+| Mean avg EE speed (m/s)       | 0.3726               | 0.3832      | 0.4076         |
+| Mean max EE speed (m/s)       | 1.2977               | 1.3387      | 1.4255         |
+| Mean avg pos error (m)        | 0.0781               | 0.0757      | 0.0843         |
+| Mean max pos error (m)        | 0.3246               | 0.3135      | 0.3338         |
+| **Mean avg mix angle (°)**    | **34.3268**          | **15.1469** | **14.0918**    |
+| **Mean max mix angle (°)**    | **43.2145**          | **38.8000** | **41.5129**    |
+| **Mean integrated mix (°·s)** | **96.1836**          | **42.4417** | **39.4852**    |
+
+
 
 ---
 
 ## Replication
 
 ### Requirements
-```bash
-pip install mujoco numpy
-mjpython main.py   # mjpython required on macOS Apple Silicon
+
+Set up the environment: 
+```
+conda create -n 16299_final_project python=3.10
+conda activate 16299_final_project
+pip install -r requirements.txt
 ```
 
-Place your Franka Panda XML at `franka_emika_panda/scene.xml`. The script auto-generates a combined scene with the centrifuge tube injected.
+Place your Franka Panda XML at `franka_emika_panda/scene.xml`. The script should auto-generate a combined scene with the centrifuge tube injected.
+
+### Relevant Files
+
+- **`test_picking.py`**: Interactive simulator with real-time viewer. Runs one trial with configurable LIQUID_TAU and wrist PID gains.
+- **`record_test_picking.py`**: Offline video recorder. Generates MP4 of trajectory with custom camera angles for visualization.
+- **`trial_runs.py`**: Does a linear interp. over LIQUID_TAU (0.0→2.0s). Runs multiple trials and saves stats to CSV.
+- **`kinematics.py`**: Runs regular 6 element IDK as a baseline.
+
 
 ### Key Parameters
 
@@ -169,22 +174,46 @@ Place your Franka Panda XML at `franka_emika_panda/scene.xml`. The script auto-g
 | `wrist_pid kp` | 0.5 | Correction aggressiveness |
 | `wrist_pid kd` | 0.1 | Wrist damping: increase if oscillating |
 
-### Tuning the PID
-Start with `ki=0, kd=0`. Increase `kp` until the arm visibly corrects wrist orientation during transport. Add `kd` if the wrist oscillates. 
-
 ---
 
-## Future Work
+## Reflections
 
-- **RL**: use reinforcement learning with a mixing penalty in the reward function to find optimal transport trajectories, combined with PID for fine-grained EE control
-- **Real hardware**: transfer to a physical Franka Panda arm; primary challenge is noisy acceleration estimation and tube pickup calibration
-- **Fluid simulation**: replace the proxy metric with particle-based simulation for ground-truth mixing measurement
+### Changes Since Initial Presentation
+
+Considerations arose during initial presentations of this project to the class, where suggestions were made to not reduce the arm's DOF from 7 to 6. We chose to, instead of replacing the wrist entirely, blend existing inverse differential kinematics with information (injected into the null space) from the other PID loop. We additionally added a comparison to a full 6-element vector (position and orientation instead of just position) goal to compare against pure inverse kinematics with no separate PID in response to these suggestions.
+
+### Iteration Process
+
+The general process involved identifying the problem (for the project proposal), deciding where feedback control could assist in solving the problem, identifying a simulation environment, and then designing the implementation of how error for the PID loop is calculated. 
+
+### What Worked
+
+The idea of adding a separate PID feedback loop to inject some information about desired wrist position proved to improve mixing score by quite a lot. This was the crux of our project, and it performed better (even if marginally) than using full inverse kinematics with orientation and position. 
+
+Getting the Mujoco simulation to have the robot follow trajectories worked well.
+
+### What Didn't Work
+
+Lots of effort went into deciding 1) where to use feedback control in the project and 2) how to define liquid mixing. 
+
+For the first point, choosing to apply a separate PID loop for the wrist angle was decided after realizing using PID to "minimize jerk" was hard to accomplish. We found that trying to adjust all the joints' PID controllers to "minimize jerk" made it really difficult to have stable movement. Thus, we relied on the trajectory planning following the Macfarlane & Croft paper to minimize jerk overall, and decided to make the PID more granular. 
+
+For the second point, this is still an ongoing question. We decided to go with our metric because it was simpler to implement and allowed for a clear error signal for PID to correct. Having the liquid "lag" also introduced real-world inconsistencies as well. However, this representation is something that can be continually worked on and improved, as it is not necessarily the best representation of fluid physics.
+
+---
+## Conclusion
+
+We find that using PID to control tuble angle can be a potentially useful addition to laboratory robots. Adding a PID layer for the wrist joint specifically that is injected into the null space of regular pose can yield less liquid mixing (according to metrics defined by angle of the tube and liquid) while simultaneously not affecting the PID of the joints themselves for trajectory following. These results imply that considering centrifuge tube transport could be a well-scoped task for robot manipulators even though these payloads can be sensitive. 
 
 ---
 
 ## References
 
-- Flash & Hogan (1985). The coordination of arm movements. *Journal of Neuroscience*, 5(7).
-- Macfarlane & Croft (2003). Jerk-bounded manipulator trajectory planning. *IEEE T-RA*, 19(1).
-- Buss (2009). Introduction to inverse kinematics with Jacobian transpose, pseudoinverse and damped least squares methods.
-- Liégeois (1977). Automatic supervisory control of multibody mechanisms. *IEEE T-SMC*, 7(12).
+## References
+
+- Macfarlane, S., & Croft, E. A. (2003). [Jerk-bounded manipulator trajectory
+  planning: Design for real-time applications](https://www.researchgate.net/publication/3299311_Jerk-bounded_manipulator_trajectory_planning_Design_for_real-time_applications).
+- Buss, S. R. (2004). [Introduction to inverse kinematics with Jacobian transpose,
+  pseudoinverse and damped least squares methods](https://www.cs.cmu.edu/~15464-s13/lectures/lecture6/iksurvey.pdf).
+- Liégeois, A. (1977). [Automatic supervisory control of the configuration and
+  behavior of multibody mechanisms](https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=4309644).
