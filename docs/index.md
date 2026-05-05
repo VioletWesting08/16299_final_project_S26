@@ -99,6 +99,10 @@ dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
     <img src="nopid.gif" width="400" />
   </div>
   <div>
+    <h3>With regular IDK (position + orientation)</h3>
+    <img src="ik.gif" width="400" />
+  </div>
+  <div>
     <h3>With Wrist Orientation PID</h3>
     <img src="pid.gif" width="400" />
   </div>
