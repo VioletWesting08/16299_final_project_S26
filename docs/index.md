@@ -93,26 +93,6 @@ dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
 
 ## Results
 
-<div style="display: flex; gap: 20px; justify-content: center; flex-wrap: wrap;">
-  <div>
-    <h3>No PID Control</h3>
-    <p><i>[Insert kinematics_no_pid.gif]</i></p>
-  </div>
-  <div>
-    <h3>Joint PD Only</h3>
-    <p><i>[Insert kinematics_joint_pd_only.gif]</i></p>
-  </div>
-  <div>
-    <h3>Full Body Only (No Wrist)</h3>
-    <p><i>[Insert kinematics_full_body_only.gif]</i></p>
-  </div>
-  <div>
-    <h3>Full Body + Wrist Compensation</h3>
-    <p><i>[Insert kinematics_full_body.gif]</i></p>
-  </div>
-</div>
-
-
 <div style="display: flex; gap: 20px; justify-content: center;">
   <div>
     <h3>Without PID/orientation tracking at all</h3>
