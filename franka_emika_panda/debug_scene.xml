@@ -1,0 +1,12 @@
+<mujoco>
+    <include file="C:\Users\Alan Ramiez\Documents\CMU Stuff\Control Systems\Final Project\16299_final_project_S26\franka_emika_panda\scene.xml"/>
+    <worldbody>
+        <body name="centrifuge_tube" pos="0.58 -0.05 0.05">
+            <freejoint name="tube_joint"/>
+            <geom name="tube_geom" type="cylinder" size="0.015 0.05"
+                  rgba="0.2 0.7 1.0 0.9" mass="0.01"
+                  condim="4" friction="2.0 0.5 0.0001" 
+                  solimp="0.95 0.99 0.001" solref="0.01 1"/>
+        </body>
+    </worldbody>
+</mujoco>

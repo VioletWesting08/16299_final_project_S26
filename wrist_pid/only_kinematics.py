@@ -2,12 +2,21 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 import os
+import imageio.v2 as imageio
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 SCENE_XML = "franka_emika_panda/scene.xml"
 ENV_XML   = "franka_emika_panda/debug_scene.xml"
+
+# Recording
+RECORD_VIDEO    = True
+VIDEO_PATH      = "ik_simulation.mp4"
+VIDEO_FPS       = 30
+VIDEO_WIDTH     = 1280
+VIDEO_HEIGHT    = 720
+CAMERA_NAME     = None   # None = default free camera, or e.g. "track"
 
 # Task-space PID for position feedback
 USE_TASK_SPACE_PID = True
@@ -33,7 +42,7 @@ USE_6D_IK = True
 ORI_WEIGHT = 0.3   # scales dx_ori before stacking with dx_pos
 
 # Wrist orientation control — only used when USE_6D_IK = False
-USE_WRIST_PID = True
+USE_WRIST_PID = False
 USE_LQR_WEIGHT = False
 WRIST_WEIGHT = 0.27
 
@@ -46,13 +55,13 @@ AGGRESSIVE_TRANSPORT = True
 INIT_TUBE_MISALIGNED = False
 
 PHASES = [
-    {"name": "1. Hover",     "target_xyz": [0.6182, -0.0470, 0.2958], "gripper": 0.04, "duration": 1.0},
-    {"name": "2. Descend",   "target_xyz": [0.6, 0.0, 0.12],          "gripper": 0.04, "duration": 1.0},
-    {"name": "3. Grasp",     "target_xyz": [0.6, 0.0, 0.12],          "gripper": 0.00, "duration": 0.5},
-    {"name": "4. Lift",      "target_xyz": [0.6, 0.0, 0.40],          "gripper": 0.00, "duration": 1.0},
-    {"name": "5. Transport", "target_xyz": [0.4, 0.4, 0.40],          "gripper": 0.00, "duration": 0.3 if AGGRESSIVE_TRANSPORT else 1.0},
-    {"name": "6. Place",     "target_xyz": [0.4, 0.4, 0.12],          "gripper": 0.00, "duration": 1.0},
-    {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.12],          "gripper": 0.04, "duration": 0.5},
+    {"name": "1. Hover",     "target_xyz": [0.6182, -0.0470, 0.2958], "gripper": 200, "duration": 1.0},
+    {"name": "2. Descend",   "target_xyz": [0.6, 0.0, 0.11], "gripper": 200, "duration": 1.0},
+    {"name": "3. Grasp",     "target_xyz": [0.6, 0.0, 0.11], "gripper": 0, "duration": 0.5},
+    {"name": "4. Lift",      "target_xyz": [0.6, 0.0, 0.40], "gripper": 0, "duration": 1.0},
+    {"name": "5. Transport", "target_xyz": [0.4, 0.4, 0.40], "gripper": 0, "duration": 0.3 if AGGRESSIVE_TRANSPORT else 1.0},
+    {"name": "6. Place",     "target_xyz": [0.4, 0.4, 0.12], "gripper": 0, "duration": 1.5},
+    {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.12], "gripper": 200, "duration": 1},
 ]
 
 # ═══════════════════════════════════════════════════════════════
@@ -168,10 +177,12 @@ def build_scene(scene_path, out_path):
     xml = f"""<mujoco>
     <include file="{os.path.abspath(scene_path)}"/>
     <worldbody>
-        <body name="centrifuge_tube" pos="0.6 0.0 0.07">
+        <body name="centrifuge_tube" pos="0.58 -0.05 0.05">
             <freejoint name="tube_joint"/>
             <geom name="tube_geom" type="cylinder" size="0.015 0.05"
-                  rgba="0.2 0.7 1.0 0.9" mass="0.05"/>
+                  rgba="0.2 0.7 1.0 0.9" mass="0.01"
+                  condim="4" friction="2.0 0.5 0.0001" 
+                  solimp="0.95 0.99 0.001" solref="0.01 1"/>
         </body>
     </worldbody>
 </mujoco>"""
@@ -189,6 +200,8 @@ def main():
     dt    = model.opt.timestep
 
     hand_id   = model.body("hand").id
+    left_finger_id = model.body("left_finger").id
+    right_finger_id = model.body("right_finger").id
     task_pid  = TaskSpacePID()
     joint_pid = JointPIDController(ndof=7)
     wrist_pid = MixingPID(kp=0.5, ki=0.01, kd=0.1)
@@ -200,12 +213,37 @@ def main():
     for _ in range(500):
         mujoco.mj_step(model, data)
     mujoco.mj_forward(model, data)
-    traj.set_start(data.xpos[hand_id].copy())
+    for _ in range(500):
+        mujoco.mj_step(model, data)
+
+    mujoco.mj_forward(model, data)
+    
+    # Calculate starting TCP as the exact midpoint between the fingers
+    tcp_start = (data.xpos[left_finger_id] + data.xpos[right_finger_id]) / 2.0
+    
+    # Pass virtual TCP start to the trajectory sampler
+    traj.set_start(tcp_start)
 
     if INIT_TUBE_MISALIGNED:
         data.qpos[5] += 0.5
         mujoco.mj_forward(model, data)
-
+    
+    if RECORD_VIDEO:
+        renderer = mujoco.Renderer(model, height=480, width=640)
+        writer   = imageio.get_writer(VIDEO_PATH, fps=VIDEO_FPS, macro_block_size=None)
+        steps_per_frame = max(1, int(1.0 / (VIDEO_FPS * dt)))
+        
+        # Set up camera for bottom-right view
+        camera = mujoco.MjvCamera()
+        camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+        camera.lookat = np.array([0.5, 0.2, 0.2])
+        camera.distance = 1.2
+        camera.elevation = 0
+        camera.azimuth = 220
+        
+        print(f"[REC] Recording to {VIDEO_PATH} @ {VIDEO_FPS}fps "
+              f"(1 frame every {steps_per_frame} steps) | Camera: bottom-right")
+        
     sim_t          = 0.0
     t_eff          = 0.0
     prev_phase_idx = -1
@@ -241,13 +279,17 @@ def main():
             target_xyz, gripper_w = traj.sample(t_eff)
 
             # ── 4. JACOBIANS ─────────────────────────────────────
-            current_xyz = data.xpos[hand_id].copy()
-            dx_pos      = target_xyz - current_xyz
+            # current_xyz = data.xpos[hand_id].copy()
+            # dx_pos      = target_xyz - current_xyz
+            tcp_global_pos = (data.xpos[left_finger_id] + data.xpos[right_finger_id]) / 2.0
+            
+            # Error is calculated from this floating midpoint
+            dx_pos = target_xyz - tcp_global_pos 
             pos_error_values.append(float(np.linalg.norm(dx_pos)))
 
             jacp = np.zeros((3, model.nv))
             jacr = np.zeros((3, model.nv))
-            mujoco.mj_jacBody(model, data, jacp, jacr, hand_id)
+            mujoco.mj_jac(model, data, jacp, jacr, tcp_global_pos, hand_id)
             J  = jacp[:, :7]   # (3×7) positional
             Jr = jacr[:, :7]   # (3×7) rotational
 
@@ -339,6 +381,11 @@ def main():
             # ── 10. STEP ─────────────────────────────────────────
             mujoco.mj_step(model, data)
             sim_t += dt
+            
+            if RECORD_VIDEO and int(sim_t / dt) % steps_per_frame == 0:
+                renderer.update_scene(data, camera=camera)
+                frame = renderer.render()
+                writer.append_data(frame)
 
             # ── 11. LOGGING ──────────────────────────────────────
             if phase_idx != prev_phase_idx:
@@ -367,6 +414,14 @@ def main():
                 tilt_error_values.append(float(mix_angle))
 
             viewer.sync()
+
+    if RECORD_VIDEO:
+        writer.close()
+        try:
+            renderer.close()
+        except (AttributeError, RuntimeError):
+            pass  # renderer cleanup may fail; that's ok
+        print(f"\n[REC] Saved → {VIDEO_PATH}")
 
     if os.path.exists(ENV_XML):
         os.remove(ENV_XML)

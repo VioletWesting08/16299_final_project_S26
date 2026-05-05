@@ -38,3 +38,6 @@ Thumbs.db
 
 # Python version
 .python-version
+
+# Data file
+.outputs/

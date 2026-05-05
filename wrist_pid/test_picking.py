@@ -2,12 +2,21 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 import os
+import imageio.v2 as imageio
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 SCENE_XML = "franka_emika_panda/scene.xml"
 ENV_XML   = "franka_emika_panda/debug_scene.xml"
+
+# Recording
+RECORD_VIDEO    = True
+VIDEO_PATH      = "test_pid_simulation.mp4"
+VIDEO_FPS       = 30
+VIDEO_WIDTH     = 1280
+VIDEO_HEIGHT    = 720
+CAMERA_NAME     = None   # None = default free camera, or e.g. "track"
 
 # Task-space PID for position feedback
 USE_TASK_SPACE_PID = True     # toggle position PID feedback on/off
@@ -35,15 +44,23 @@ LIQUID_TAU = 1.0             # liquid reorientation time constant (seconds)
 AGGRESSIVE_TRANSPORT = True   # fast transport phase (0.3s vs 1.0s) for stress-testing
 INIT_TUBE_MISALIGNED = False  # start with tube deliberately tilted
 DEBUG_WRIST_PID = True        # print wrist control diagnostics
-
+# PHASES = [
+#     {"name": "1. Hover",     "target_xyz": [0.6182, -0.0470, 0.2958], "gripper": 200, "duration": 1.0},
+#     {"name": "2. Descend",   "target_xyz": [0.6, 0.0, 0.09], "gripper": 200, "duration": 1.0},
+#     {"name": "3. Grasp",     "target_xyz": [0.6, 0.0, 0.09], "gripper": 0, "duration": 0.5},
+#     {"name": "4. Lift",      "target_xyz": [0.6, 0.0, 0.40], "gripper": 0, "duration": 1.0},
+#     {"name": "5. Transport", "target_xyz": [0.4, 0.4, 0.40], "gripper": 0, "duration": 0.3 if AGGRESSIVE_TRANSPORT else 1.0},
+#     {"name": "6. Place",     "target_xyz": [0.4, 0.4, 0.12], "gripper": 0, "duration": 1.5},
+#     {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.12], "gripper": 200, "duration": 1},
+# ]
 PHASES = [
     {"name": "1. Hover",     "target_xyz": [0.6182, -0.0470, 0.2958], "gripper": 200, "duration": 1.0},
-    {"name": "2. Descend",   "target_xyz": [0.62, 0.0, 0.08], "gripper": 200, "duration": 1.0},
-    {"name": "3. Grasp",     "target_xyz": [0.62, 0.0, 0.08], "gripper": 0.00, "duration": 0.5},
+    {"name": "2. Descend",   "target_xyz": [0.62, 0.0, 0.075], "gripper": 200, "duration": 1.0},
+    {"name": "3. Grasp",     "target_xyz": [0.62, 0.0, 0.075], "gripper": 0.00, "duration": 0.5},
     {"name": "4. Lift",      "target_xyz": [0.62, 0.0, 0.40], "gripper": 0.00, "duration": 1.0},
     {"name": "5. Transport", "target_xyz": [0.4, 0.4, 0.40], "gripper": 0.00, "duration": 0.3 if AGGRESSIVE_TRANSPORT else 1.0},
     {"name": "6. Place",     "target_xyz": [0.4, 0.4, 0.08], "gripper": 0.00, "duration": 1.0},
-    {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.08], "gripper": 0.00, "duration": 0.5},
+    {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.08], "gripper": 200, "duration": 0.5},
 ]
 
 
@@ -123,7 +140,7 @@ class MixingPID:
 
     def reset(self):
         """Reset integral and derivative state."""
-        self.integral = 0.0
+        self.integral   = 0.0
         self.prev_error = 0.0
 
     def update(self, theta_mix_deg: float, dt: float) -> float:
@@ -202,15 +219,6 @@ class TrajectorySampler:
                       a4 * (t_local ** 4) + 
                       a5 * (t_local ** 5))
         
-        # start_gripper = self.phases[idx - 1]["gripper"] if idx > 0 else self.phases[0]["gripper"]
-        # end_gripper = phase["gripper"]
-        # T = self.durations[idx]
-        
-        # if T > 0:
-        #     current_gripper = start_gripper + (end_gripper - start_gripper) * (t_local / T)
-        # else:
-        #     current_gripper = end_gripper
-
         return target_xyz, phase["gripper"]
 
 
@@ -221,11 +229,11 @@ def build_scene(scene_path, out_path):
     xml = f"""<mujoco>
     <include file="{os.path.abspath(scene_path)}"/>
     <worldbody>
-        <body name="centrifuge_tube" pos="0.6 0.025 0.05">
+        <body name="centrifuge_tube" pos="0.6 -0.025 0.05">
             <freejoint name="tube_joint"/>
             <geom name="tube_geom" type="cylinder" size="0.015 0.05"
-                  rgba="0.2 0.7 1.0 0.9" mass="0.05"
-                  condim="4" friction="2.0 0.5 0.0001"
+                  rgba="0.2 0.7 1.0 0.9" mass="0.01"
+                  condim="4" friction="2.0 0.5 0.0001" 
                   solimp="0.95 0.99 0.001" solref="0.01 1"/>
         </body>
     </worldbody>
@@ -253,6 +261,8 @@ def main():
     data  = mujoco.MjData(model)
     dt    = model.opt.timestep
 
+    left_finger_id = model.body("left_finger").id
+    right_finger_id = model.body("right_finger").id
     hand_id  = model.body("hand").id
     task_pid = TaskSpacePID()
     joint_pid = JointPIDController(ndof=7)
@@ -269,18 +279,33 @@ def main():
 
     mujoco.mj_forward(model, data)
     
-    # Calculate starting TCP position
-    hand_pos_start = data.xpos[hand_id].copy()
-    hand_rot_start = data.xmat[hand_id].reshape(3, 3)
-    tcp_start = hand_pos_start + hand_rot_start @ np.array([0.0, 0.0, 0.1034])
+    # Calculate starting TCP as the exact midpoint between the fingers
+    tcp_start = (data.xpos[left_finger_id] + data.xpos[right_finger_id]) / 2.0
     
-    # Pass TCP start to the trajectory sampler
+    # Pass virtual TCP start to the trajectory sampler
     traj.set_start(tcp_start)
 
     # Initialize tube deliberately misaligned if testing
     if INIT_TUBE_MISALIGNED:
         data.qpos[5] += 0.5   # tilt joint 6
         mujoco.mj_forward(model, data)
+
+    # ── set up offscreen renderer ─────────────────────────────────
+    if RECORD_VIDEO:
+        renderer = mujoco.Renderer(model, height=480, width=640)
+        writer   = imageio.get_writer(VIDEO_PATH, fps=VIDEO_FPS, macro_block_size=None)
+        steps_per_frame = max(1, int(1.0 / (VIDEO_FPS * dt)))
+        
+        # Set up camera for bottom-right view
+        camera = mujoco.MjvCamera()
+        camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+        camera.lookat = np.array([0.5, 0.2, 0.2])
+        camera.distance = 1.2
+        camera.elevation = 0
+        camera.azimuth = 220
+        
+        print(f"[REC] Recording to {VIDEO_PATH} @ {VIDEO_FPS}fps "
+              f"(1 frame every {steps_per_frame} steps) | Camera: bottom-right")
 
     # Generate and log full trajectory
     trajectory_samples = 100
@@ -348,7 +373,7 @@ def main():
             filtered_ee_accel = (ACCEL_LPFILTER_ALPHA * ee_accel_raw + 
                                 (1.0 - ACCEL_LPFILTER_ALPHA) * filtered_ee_accel)
             
-            a_effective = g - filtered_ee_accel   # what the liquid "feels" (smoothed)
+            a_effective = g + filtered_ee_accel   # what the liquid "feels" (smoothed)
             
             # ── LIQUID INERTIA MODEL ─────────────────────────────────────
             # Liquid doesn't instantly reorient; it lags behind a_effective
@@ -362,6 +387,7 @@ def main():
             target_xyz, gripper_w = traj.sample(t_eff)
 
             # ── 3. COMPUTE IK ──────────────────────────────────────
+            # tcp_global_pos = (data.xpos[left_finger_id] + data.xpos[right_finger_id]) / 2.0
             TCP_OFFSET = np.array([0.0, 0.0, 0.1034]) 
             
             hand_pos = data.xpos[hand_id].copy()
@@ -369,18 +395,18 @@ def main():
             
             # Compute the global position of the TCP (between the fingers)
             tcp_global_pos = hand_pos + hand_rot @ TCP_OFFSET
-            
-            # Error is now calculated from the fingertips, not the wrist
-            dx = target_xyz - tcp_global_pos       
+
+            # # Error is calculated from this floating midpoint
+            dx = target_xyz - tcp_global_pos    
+               
             
             # Collect position tracking error
             pos_error_values.append(float(np.linalg.norm(dx)))
 
-            # Compute Jacobians for the specific TCP point, NOT the hand body origin
+            # Compute Jacobians for the virtual point, anchored to the hand body kinematics
             jacp = np.zeros((3, model.nv))
             jacr = np.zeros((3, model.nv))
             mujoco.mj_jac(model, data, jacp, jacr, tcp_global_pos, hand_id)
-            
             J  = jacp[:, :7]                    # first 7 DOF positional Jacobian
             Jr = jacr[:, :7]                    # first 7 DOF rotational Jacobian
 
@@ -407,21 +433,14 @@ def main():
                 mix_angle = np.degrees(np.arccos(cos_angle))
             else:
                 mix_angle = 0.0
-            
-            # Only count mixing angle during grasping/transport phases (3-6, indices 2-5)
-            # We'll determine phase_idx right after for gating, so tentatively collect; will filter if needed
-            # Actually, move phase calculation before this for cleaner gating
+            mixing_score_values.append(float(mix_angle))
             
             # Null-space blending: posture + wrist orientation
             q_current = data.qpos[:7]
             q_posture_error = Q_NOMINAL - q_current
             
-            # Determine phase for gating logic (move earlier for phase-aware control)
-            phase_idx = int(np.searchsorted(traj.boundaries, t_eff, side="right"))
-            phase_idx = min(phase_idx, len(PHASES) - 1)
-            
-            # Wrist orientation control only during grasping/transport phases (3-6, indices 2-5)
-            if USE_WRIST_PID and 2 <= phase_idx <= 5:
+            # Wrist orientation control (via null-space)
+            if USE_WRIST_PID:
                 # Closed-loop control: use mixing angle as feedback
                 correction_magnitude = wrist_pid.update(mix_angle, dt)
                 
@@ -475,18 +494,24 @@ def main():
             # ── 6. STEP PHYSICS ───────────────────────────────────
             mujoco.mj_step(model, data)
 
+            if RECORD_VIDEO and int(sim_t / dt) % steps_per_frame == 0:
+                renderer.update_scene(data, camera=camera)
+                frame = renderer.render()
+                writer.append_data(frame)
+
             # ── 7. UPDATE TRACKING ────────────────────────────────
             # (no longer tracking acceleration for jerk)
             sim_t   += dt
 
             # ── 8. LOGGING ────────────────────────────────────────
-            # phase_idx already calculated above for phase-aware control
+            phase_idx = int(np.searchsorted(traj.boundaries, t_eff, side="right"))
+            phase_idx = min(phase_idx, len(PHASES) - 1)
             
             # Print phase details when phase changes
             if phase_idx != prev_phase_idx:
                 task_pid.reset()
                 joint_pid.reset()
-                wrist_pid.reset()  # clear integral state between phases
+                # Note: MixingPID doesn't require explicit reset (stateless gains)
                 phase = PHASES[phase_idx]
                 print(
                     f"\n>>> PHASE {phase_idx + 1}: {phase['name']}\n"
@@ -514,12 +539,19 @@ def main():
                 )
                 print(f"  Joints: {joints_str}")
             
-            # Collect mixing metrics only during grasping/transport phases (3-6, indices 2-5)
-            if 2 <= phase_idx <= 5:
-                mixing_score_values.append(float(mix_angle))
-                tilt_error_values.append(float(mix_angle))
+            # ── Collect mixing angle statistics ───────────────────────
+            # mix_angle already computed above; track it as tilt/mixing error
+            tilt_error_values.append(float(mix_angle))
 
             viewer.sync()
+
+    if RECORD_VIDEO:
+        writer.close()
+        try:
+            renderer.close()
+        except (AttributeError, RuntimeError):
+            pass  # renderer cleanup may fail; that's ok
+        print(f"\n[REC] Saved → {VIDEO_PATH}")
 
     if os.path.exists(ENV_XML):
         os.remove(ENV_XML)
