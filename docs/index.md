@@ -18,7 +18,7 @@ The goal of this project is to explore how feedback control can help develop the
 ### Control Architecture and Trajectory
 The kinematics approach utilizes a dual-loop PID control architecture to track a predefined sequence of spatial waypoints (Hover, Descend, Grasp, Lift, Transport, Place, Release). 
 
-* **Trajectory Generation**: To prevent sudden acceleration spikes that would disturb the payload, transitions between waypoints are governed by a 5th-order minimum-jerk polynomial. For a normalized time $\tau = t/\text{duration}$, the position scaling $s$ is calculated as:
+* **Trajectory Generation**: Inverse differential kinematics are used. To prevent sudden acceleration spikes that would disturb the payload, transitions between waypoints are governed by a 5th-order minimum-jerk polynomial. For a normalized time $\tau = t/\text{duration}$, the position scaling $s$ is calculated as:
     $$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$$
     The overall execution speed of these phases is parameterized by a tunable `time_scale`.
 * **Task-Space and Joint-Space Control**: A Task-Space PID controller minimizes the Cartesian error between the minimum-jerk trajectory and the end-effector's actual position. This 3D correction is mapped into the 7-DOF joint space using a damped pseudo-inverse Jacobian. This is combined with a null-space projection to keep the robot near a safe home posture ($Q_{\text{HOME}}$) without disrupting the end-effector task. Finally, a Joint-Space PD controller computes the necessary motor torques.
@@ -28,27 +28,18 @@ To minimize liquid mixing, the system mathematically models the internal liquid 
 
 If active wrist compensation (`use_wrist_pid`) is enabled, the controller computes the cross product between the actual tube's Z-axis and the effective gravity vector. This rotational error is mapped directly to the wrist joints via the Jacobian transpose, allowing the robot to actively tilt the tube into curves to counteract lateral acceleration and keep the liquid surface flat relative to the tube opening.
 
-### Optimization Methodology
-To find the optimal balance between speed and stability, the system uses an automated grid sweep (`run_sweep`). It systematically evaluates combinations of PID gains (`kp_scale`, `kd_scale`, `task_kp`) and execution speeds (`time_scale`). Each configuration is evaluated using a weighted objective function:
-
-$$\text{Score} = w_{\text{tilt}} \cdot \text{Tilt} + w_{\text{reach}} \cdot \text{Reach} + w_{\text{risk}} \cdot \text{Risk} + w_{\text{time}} \cdot \text{Time}$$
-
-Lower scores indicate superior performance. The algorithm heavily penalizes liquid tilt and path deviation while rewarding faster simulation completion times.
-
 ## Files
 
 - **`test_picking.py`**: Interactive simulator with real-time viewer. Runs one trial with configurable LIQUID_TAU and wrist PID gains.
 - **`record_test_picking.py`**: Offline video recorder. Generates MP4 of trajectory with custom camera angles for visualization.
 - **`trial_runs.py`**: Batch sweep over LIQUID_TAU (0.0→2.0s). Runs multiple trials and saves stats to CSV.
-- **`kinematics.py`**: Automated grid sweep and trajectory simulation focusing on minimum-jerk motion and active slosh compensation.
-
 
 
 ## Methods : Partial PID
 
 ### Mixing Metric
 
-Liquid simulation is tricky. It is instead dealt with by defining a proxy metric:
+We found great troubles in trying to simulate liquids in our environment. It is instead dealt with by defining a proxy metric:
 
 - `tube_axis`: which way the tube is pointing (gripper Z-axis)
 - `a_effective`: gravity + end-effector acceleration (what the liquid feels)
@@ -171,6 +162,30 @@ Place your Franka Panda XML at `franka_emika_panda/scene.xml`. The script auto-g
 
 ### Tuning the PID
 Start with `ki=0, kd=0`. Increase `kp` until the arm visibly corrects wrist orientation during transport. Add `kd` if the wrist oscillates. 
+
+---
+
+## Reflections
+
+### Changes Since Initial Presentation
+
+Considerations arose during initial presentations of this project to the class, where suggestions were made to not reduce the arm's DOF from 7 to 6. We chose to, instead of replacing the wrist entirely, blend existing inverse differential kinematics with information (injected into the null space) from the other PID loop. We additionally added a comparison to a full 6-element vector (position and orientation instead of just position) goal to compare against pure inverse kinematics with no separate PID in response to these suggestions.
+
+### What Worked
+
+The idea of adding a separate PID feedback loop to inject some information about desired wrist position proved to improve mixing score by quite a lot. This was the crux of our project, and it performed better (even if marginally) than using full inverse kinematics with orientation and position. 
+
+Additionally, getting the Mujoco simulation to have the robot follow trajectories worked well.
+
+### What Didn't Work
+
+Lots of effort went into deciding 1) where to use feedback control in the project and 2) how to define liquid mixing. 
+
+For the first point, choosing to apply a separate PID loop for the wrist angle was decided after realizing using PID to "minimize jerk" was hard to accomplish. We found that trying to adjust all the joints' PID controllers to "minimize jerk" made it really difficult to have stable movement. Thus, we relied on the trajectory planning following the Macfarlane & Croft paper to minimize jerk overall, and decided to make the PID more granular. 
+
+For the second point, this is still an ongoing question. We decided to go with our metric because it was simpler to implement and allowed for a clear error signal for PID to correct. Having the liquid "lag" also introduced real-world inconsistencies as well. However, this representation is something that can be continually worked on and improved, as it is not necessarily the best representation of fluid physics.
+
+Lastly, issues arose with using Mujoco itself for picking up objects. We look to translate simulation to real Franka arms in the future. Future work is discussed below.
 
 ---
 
