@@ -41,3 +41,5 @@ Thumbs.db
 
 # Output folder
 outputs/
+
+MUJOCO_LOG.txt
