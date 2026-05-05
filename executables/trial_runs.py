@@ -372,7 +372,7 @@ def main():
     for tau in tau_values:
         experiment_plan.append((tau, False, "no_pid"))
     for tau in tau_values:
-        experiment_plan.append((tau, True,  "pid_no_lqr"))
+        experiment_plan.append((tau, True,  "pid"))
 
     total = len(experiment_plan)
     results = []
@@ -421,7 +421,7 @@ def main():
 
     # ── Summary table ───────────────────────────────────────────
     no_pid_results  = [r for r in results if r["condition"] == "no_pid"]
-    pid_results     = [r for r in results if r["condition"] == "pid_no_lqr"]
+    pid_results     = [r for r in results if r["condition"] == "pid"]
 
     def mean(vals, key):
         return sum(v[key] for v in vals) / len(vals)

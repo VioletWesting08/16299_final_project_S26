@@ -129,15 +129,16 @@ mix_angle = arccos(dot(tube_axis, a_liquid / |a_liquid|))   [degrees]
 
 Linearly interpolated lag (`LIQUID_TAU`) from 0.0 to 2.0 seconds across 50 trials each with and without wrist orientation PID control.
 
-| Metric                        | No PID/orientation control | With Wrist PID |
-| ----------------------------- | ------------ | -------------- |
-| Mean avg EE speed (m/s)       | 0.3375       | 0.3923         |
-| Mean max EE speed (m/s)       | 1.2812       | 1.5466         |
-| Mean avg pos error (m)        | 0.0765       | 0.0903         |
-| Mean max pos error (m)        | 0.3466       | 0.3567         |
-| **Mean avg mix angle (°)**    | **25.4661**  | **12.0596**    |
-| **Mean max mix angle (°)**    | **36.1911**  | **24.6687**    |
-| **Mean integrated mix (°·s)** | **160.4873** | **75.9997**    |
+| Metric                        | No PID/orientation control | 6D IK baseline | With Wrist PID |
+| ----------------------------- | -------------------- | ----------- | -------------- |
+| Mean avg EE speed (m/s)       | 0.3726               | 0.3832      | 0.4076         |
+| Mean max EE speed (m/s)       | 1.2977               | 1.3387      | 1.4255         |
+| Mean avg pos error (m)        | 0.0781               | 0.0757      | 0.0843         |
+| Mean max pos error (m)        | 0.3246               | 0.3135      | 0.3338         |
+| **Mean avg mix angle (°)**    | **34.3268**          | **15.1469** | **14.0918**    |
+| **Mean max mix angle (°)**    | **43.2145**          | **38.8000** | **41.5129**    |
+| **Mean integrated mix (°·s)** | **96.1836**          | **42.4417** | **39.4852**    |
+
 
 
 ---
