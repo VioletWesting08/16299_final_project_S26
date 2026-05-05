@@ -67,16 +67,15 @@ null_proj = I - J_pinv @ J
 dq_total = dq + null_proj @ null_space_goal
 ```
 
-Wrist PID: The feedback signal is mix_angle, described in detail below. The PID targets this to zero. Its output is a correction magnitude that scales a rotation axis pointing from current tube orientation toward desired alignment. This gets mapped to joint velocities via the rotational Jacobian Jr:
-```
-dq_wrist_goal = Jr.T @ solve(Jr@Jr.T + λ²I, rotation_axis * correction_magnitude)
-```
-
-This dq_wrist_goal is then blended (using a weighted average) with a posture-recovery term and injected into the null-space:
+Wrist PID: The feedback signal is mix_angle, described in detail below. The PID targets this to zero. Its output is a correction magnitude that scales a rotation axis pointing from current tube orientation toward desired alignment. The resulting pose is then blended (using a weighted average) with a pose that is "nominal" for the Franka arm (aka. the most comfortable position for the Franka arm to be in) and injected into the null-space:
 ```
 null_space_goal = (blend_weight * dq_wrist_goal + 
                    (1.0 - blend_weight) * NULL_GAIN * q_posture_error)
 ```
+
+NOTES FROM IN-CLASS PRESENTATION: This is not explicitly solving for inverse kinematics with a target end-effector orientation (as noted in the in-class presentation). The wrist's joint is not decoupled, it is just not targeting orientation using IK. The robot arm is still acting as a 7-dof arm, it just only targets XYZ end-effector position and uses the null space to target a specific joint angle pose. This is different from straight up inverse kinematics with a hard-enforced desired end-effector orientation.
+
+As a baseline, regular inverse kinematics with a 6x7 Jacobian is implemented as a baseline to test against this wrist PID experiment. 
 
 ### Mixing Metric
 
