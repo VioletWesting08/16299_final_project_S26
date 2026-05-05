@@ -14,22 +14,35 @@ However, this can be problematic. A centrifuge tube containing two separated liq
 The goal of this project is to explore how feedback control can help develop these systems with those constraints in mind. We implement a feedback controller that runs on top of a conventional trajectory planner and continuously corrects the tube orientation so that the tube's long axis remains aligned with the direction of the effective acceleration the liquid experiences. Intuitively, the controller tries to make the tube behave from the liquid's perspective like a tube that is simply standing in gravity, even while the arm is moving along a trajectory. We evaluate this idea in simulation on a Franka Panda 7-DOF arm in MuJoCo, comparing transport with and without the PID layer.
 
 ---
+## Methods: Kinematics
 
-## Methods : Kinematics
+### Trajectory Generation
 
-### Control Architecture and Trajectory
-The kinematics approach utilizes a dual-loop PID control architecture to track a predefined sequence of spatial waypoints (Hover, Descend, Grasp, Lift, Transport, Place, Release). 
+Transitions between the 7 waypoints (Hover, Descend, Grasp, Lift,
+Transport, Place, Release) are controlled by a 5th-order minimum-jerk polynomial (see Macfarlane & Croft). For normalized time $\tau = t/T$ within each phase, the position interpolant is:
 
-* **Trajectory Generation**: Inverse differential kinematics are used. To prevent sudden acceleration spikes that would disturb the payload, transitions between waypoints are governed by a 5th-order minimum-jerk polynomial. For a normalized time $\tau = t/\text{duration}$, the position scaling $s$ is calculated as:
-    $$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$$
-    The overall execution speed of these phases is parameterized by a tunable `time_scale`.
-* **Task-Space and Joint-Space Control**: A Task-Space PID controller minimizes the Cartesian error between the minimum-jerk trajectory and the end-effector's actual position. This 3D correction is mapped into the 7-DOF joint space using a damped pseudo-inverse Jacobian. This is combined with a null-space projection to keep the robot near a safe home posture ($Q_{\text{HOME}}$) without disrupting the end-effector task. Finally, a Joint-Space PD controller computes the necessary motor torques.
+$$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$$
 
-### Active "Slosh" Calculations
-To minimize liquid mixing, the system mathematically models the internal liquid surface by tracking the **effective gravity vector**. This vector accounts for both standard gravity and the low-pass filtered acceleration of the end-effector, simulating the delayed sloshing motion of a viscous fluid.
+which enforces zero velocity and zero acceleration at phase boundaries. Overall execution speed is controlled by a tunable `time_scale` parameter that uniformly scales all phase
+durations.
 
-If active wrist compensation (`use_wrist_pid`) is enabled, the controller computes the cross product between the actual tube's Z-axis and the effective gravity vector. This rotational error is mapped directly to the wrist joints via the Jacobian transpose, allowing the robot to actively tilt the tube into curves to counteract lateral acceleration and keep the liquid surface flat relative to the tube opening.
+### Trajectory Following via Inverse Differential Kinematics
 
+At each timestep, the Cartesian position error $\Delta\mathbf{x}$ between the
+trajectory and the actual end-effector position is resolved into joint velocities
+via damped least-squares (Buss 2004):
+
+$$\Delta\mathbf{q} = \mathbf{J}^\top(\mathbf{J}\mathbf{J}^\top + \lambda^2\mathbf{I})^{-1}\Delta\mathbf{x}$$
+
+The damping term $\lambda^2$ prevents joint velocity blowup near singular
+configurations. The 7-DOF arm tracking a 3D position target leaves a 4-dimensional
+null space, which is exploited to simultaneously pull the arm toward a safe nominal
+posture $Q_\text{HOME}$ without disturbing end-effector tracking (Liégeois 1977):
+
+$$\Delta\mathbf{q} = \Delta\mathbf{q}_\text{position} + (\mathbf{I} - \mathbf{J}^+\mathbf{J})\cdot k(Q_\text{HOME} - \mathbf{q})$$
+
+The resulting desired joint positions are then tracked by a joint-level PD controller
+that converts position and velocity errors into motor torques.
 
 ## Methods : Partial PID
 
@@ -178,7 +191,12 @@ We find that using PID to control tuble angle can be a potentially useful additi
 
 ## References
 
-- Flash & Hogan (1985). The coordination of arm movements. *Journal of Neuroscience*, 5(7).
-- Macfarlane & Croft (2003). Jerk-bounded manipulator trajectory planning. *IEEE T-RA*, 19(1).
-- Buss (2009). Introduction to inverse kinematics with Jacobian transpose, pseudoinverse and damped least squares methods.
-- Liégeois (1977). Automatic supervisory control of multibody mechanisms. *IEEE T-SMC*, 7(12).
+## References
+
+- Macfarlane, S., & Croft, E. A. (2003). [Jerk-bounded manipulator trajectory
+  planning: Design for real-time applications](https://www.researchgate.net/publication/3299311_Jerk-bounded_manipulator_trajectory_planning_Design_for_real-time_applications).
+- Buss, S. R. (2004). [Introduction to inverse kinematics with Jacobian transpose,
+  pseudoinverse and damped least squares methods](https://www.cs.cmu.edu/~15464-s13/lectures/lecture6/iksurvey.pdf).
+
+- Liégeois, A. (1977). [Automatic supervisory control of the configuration and
+  behavior of multibody mechanisms](https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=4309644).
