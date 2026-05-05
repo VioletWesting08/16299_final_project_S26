@@ -115,12 +115,12 @@ dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
 
 <div style="display: flex; gap: 20px; justify-content: center;">
   <div>
-    <h3>Without PID</h3>
-    <img src="no_pid_simulation(2).gif" width="400" />
+    <h3>Without PID/orientation tracking at all</h3>
+    <img src="nopid.gif" width="400" />
   </div>
   <div>
     <h3>With Wrist Orientation PID</h3>
-    <img src="pid_simulation(1).gif" width="400" />
+    <img src="pid.gif" width="400" />
   </div>
 </div>
 
