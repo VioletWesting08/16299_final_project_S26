@@ -103,7 +103,7 @@ dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
     <img src="ik.gif" width="400" />
   </div>
   <div>
-    <h3>With Wrist Orientation PID</h3>
+    <h3>With Wrist Orientation PID feedback loop</h3>
     <img src="pid.gif" width="400" />
   </div>
 </div>
@@ -127,12 +127,15 @@ Linearly interpolated lag (`LIQUID_TAU`) from 0.0 to 2.0 seconds across 50 trial
 ## Replication
 
 ### Requirements
-```bash
-pip install mujoco numpy
-mjpython main.py   # mjpython required on macOS Apple Silicon
+
+Set up the environment: 
+```
+conda create -n 16299_final_project python=3.10
+conda activate 16299_final_project
+pip install -r requirements.txt
 ```
 
-Place your Franka Panda XML at `franka_emika_panda/scene.xml`. The script auto-generates a combined scene with the centrifuge tube injected.
+Place your Franka Panda XML at `franka_emika_panda/scene.xml`. The script should auto-generate a combined scene with the centrifuge tube injected.
 
 ### Key Parameters
 
