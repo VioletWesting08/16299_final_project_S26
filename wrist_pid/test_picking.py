@@ -35,14 +35,15 @@ LIQUID_TAU = 1.0             # liquid reorientation time constant (seconds)
 AGGRESSIVE_TRANSPORT = True   # fast transport phase (0.3s vs 1.0s) for stress-testing
 INIT_TUBE_MISALIGNED = False  # start with tube deliberately tilted
 DEBUG_WRIST_PID = True        # print wrist control diagnostics
+
 PHASES = [
-    {"name": "1. Hover",     "target_xyz": [0.6182, -0.0470, 0.2958], "gripper": 0.04, "duration": 1.0},
-    {"name": "2. Descend",   "target_xyz": [0.6, 0.0, 0.12], "gripper": 0.04, "duration": 1.0},
-    {"name": "3. Grasp",     "target_xyz": [0.6, 0.0, 0.12], "gripper": 0.00, "duration": 0.5},
-    {"name": "4. Lift",      "target_xyz": [0.6, 0.0, 0.40], "gripper": 0.00, "duration": 1.0},
+    {"name": "1. Hover",     "target_xyz": [0.6182, -0.0470, 0.2958], "gripper": 200, "duration": 1.0},
+    {"name": "2. Descend",   "target_xyz": [0.62, 0.0, 0.08], "gripper": 200, "duration": 1.0},
+    {"name": "3. Grasp",     "target_xyz": [0.62, 0.0, 0.08], "gripper": 0.00, "duration": 0.5},
+    {"name": "4. Lift",      "target_xyz": [0.62, 0.0, 0.40], "gripper": 0.00, "duration": 1.0},
     {"name": "5. Transport", "target_xyz": [0.4, 0.4, 0.40], "gripper": 0.00, "duration": 0.3 if AGGRESSIVE_TRANSPORT else 1.0},
-    {"name": "6. Place",     "target_xyz": [0.4, 0.4, 0.12], "gripper": 0.00, "duration": 1.0},
-    {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.12], "gripper": 0.04, "duration": 0.5},
+    {"name": "6. Place",     "target_xyz": [0.4, 0.4, 0.08], "gripper": 0.00, "duration": 1.0},
+    {"name": "7. Release",   "target_xyz": [0.4, 0.4, 0.08], "gripper": 0.00, "duration": 0.5},
 ]
 
 
@@ -201,6 +202,15 @@ class TrajectorySampler:
                       a4 * (t_local ** 4) + 
                       a5 * (t_local ** 5))
         
+        # start_gripper = self.phases[idx - 1]["gripper"] if idx > 0 else self.phases[0]["gripper"]
+        # end_gripper = phase["gripper"]
+        # T = self.durations[idx]
+        
+        # if T > 0:
+        #     current_gripper = start_gripper + (end_gripper - start_gripper) * (t_local / T)
+        # else:
+        #     current_gripper = end_gripper
+
         return target_xyz, phase["gripper"]
 
 
@@ -211,10 +221,12 @@ def build_scene(scene_path, out_path):
     xml = f"""<mujoco>
     <include file="{os.path.abspath(scene_path)}"/>
     <worldbody>
-        <body name="centrifuge_tube" pos="0.6 0.0 0.07">
+        <body name="centrifuge_tube" pos="0.6 0.025 0.05">
             <freejoint name="tube_joint"/>
             <geom name="tube_geom" type="cylinder" size="0.015 0.05"
-                  rgba="0.2 0.7 1.0 0.9" mass="0.05"/>
+                  rgba="0.2 0.7 1.0 0.9" mass="0.05"
+                  condim="4" friction="2.0 0.5 0.0001"
+                  solimp="0.95 0.99 0.001" solref="0.01 1"/>
         </body>
     </worldbody>
 </mujoco>"""
@@ -256,7 +268,14 @@ def main():
         mujoco.mj_step(model, data)
 
     mujoco.mj_forward(model, data)
-    traj.set_start(data.xpos[hand_id].copy())
+    
+    # Calculate starting TCP position
+    hand_pos_start = data.xpos[hand_id].copy()
+    hand_rot_start = data.xmat[hand_id].reshape(3, 3)
+    tcp_start = hand_pos_start + hand_rot_start @ np.array([0.0, 0.0, 0.1034])
+    
+    # Pass TCP start to the trajectory sampler
+    traj.set_start(tcp_start)
 
     # Initialize tube deliberately misaligned if testing
     if INIT_TUBE_MISALIGNED:
@@ -343,16 +362,25 @@ def main():
             target_xyz, gripper_w = traj.sample(t_eff)
 
             # ── 3. COMPUTE IK ──────────────────────────────────────
-            current_xyz = data.xpos[hand_id].copy()
-            dx = target_xyz - current_xyz       # position error in world frame
+            TCP_OFFSET = np.array([0.0, 0.0, 0.1034]) 
+            
+            hand_pos = data.xpos[hand_id].copy()
+            hand_rot = data.xmat[hand_id].reshape(3, 3)
+            
+            # Compute the global position of the TCP (between the fingers)
+            tcp_global_pos = hand_pos + hand_rot @ TCP_OFFSET
+            
+            # Error is now calculated from the fingertips, not the wrist
+            dx = target_xyz - tcp_global_pos       
             
             # Collect position tracking error
             pos_error_values.append(float(np.linalg.norm(dx)))
 
-            # Compute both positional and rotational Jacobians
+            # Compute Jacobians for the specific TCP point, NOT the hand body origin
             jacp = np.zeros((3, model.nv))
             jacr = np.zeros((3, model.nv))
-            mujoco.mj_jacBody(model, data, jacp, jacr, hand_id)
+            mujoco.mj_jac(model, data, jacp, jacr, tcp_global_pos, hand_id)
+            
             J  = jacp[:, :7]                    # first 7 DOF positional Jacobian
             Jr = jacr[:, :7]                    # first 7 DOF rotational Jacobian
 

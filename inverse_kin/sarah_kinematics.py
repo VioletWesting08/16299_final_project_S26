@@ -264,7 +264,7 @@ class TrialConfig:
     task_kp: float = TASK_KP
     time_scale: float = 1.0
     use_task_pid: bool = True
-    use_wrist_pid: bool = False
+    use_wrist_pid: bool = True
     wrist_kp: float = WRIST_ORIENT_KP
     name: str = "trial"
 
