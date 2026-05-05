@@ -100,15 +100,15 @@ dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
 
 Linearly interpolated lag (`LIQUID_TAU`) from 0.0 to 2.0 seconds across 50 trials each with and without wrist orientation PID control.
 
-| Metric | No Wrist PID | With Wrist PID |
-|---|---|---|
-| Mean avg EE speed (m/s) | 0.3726 | 0.4076 |
-| Mean max EE speed (m/s) | 1.2977 | 1.4255 |
-| Mean avg pos error (m) | 0.0781 | 0.0843 |
-| Mean max pos error (m) | 0.3246 | 0.3338 |
-| **Mean avg mix angle (°)** | **34.41** | **14.09** |
-| **Mean max mix angle (°)** | **43.80** | **41.51** |
-| **Mean integrated mix (°·s)** | **96.42** | **39.49** |
+| Metric                        | No PID/orientation control | With Wrist PID |
+| ----------------------------- | ------------ | -------------- |
+| Mean avg EE speed (m/s)       | 0.3292       | 0.3648         |
+| Mean max EE speed (m/s)       | 1.3071       | 1.4695         |
+| Mean avg pos error (m)        | 0.0668       | 0.0783         |
+| Mean max pos error (m)        | 0.3067       | 0.3480         |
+| **Mean avg mix angle (°)**    | **34.8832**  | **14.8218**    |
+| **Mean max mix angle (°)**    | **44.6225**  | **42.1592**    |
+| **Mean integrated mix (°·s)** | **115.1844** | **48.9414**    |
 
 ---
 
