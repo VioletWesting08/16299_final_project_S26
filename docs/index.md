@@ -14,32 +14,29 @@ However, this can be problematic. A centrifuge tube containing two separated liq
 The goal of this project is to explore how feedback control can help develop these systems with those constraints in mind. We implement a feedback controller that runs on top of a conventional trajectory planner and continuously corrects the tube orientation so that the tube's long axis remains aligned with the direction of the effective acceleration the liquid experiences. Intuitively, the controller tries to make the tube behave from the liquid's perspective like a tube that is simply standing in gravity, even while the arm is moving along a trajectory. We evaluate this idea in simulation on a Franka Panda 7-DOF arm in MuJoCo, comparing transport with and without the PID layer.
 
 ---
-## Methods: Kinematics
+## Methods: Kinematics### Trajectory Generation
 
-### Trajectory Generation
+Transitions between the 7 waypoints (Hover, Descend, Grasp, Lift, Transport, Place,
+Release) are controlled by a 5th-order minimum-jerk polynomial (Macfarlane & Croft 2003):
+x(t) = a₀ + a₁t + a₂t² + a₃t³ + a₄t⁴ + a₅t⁵
+a₃ = 10(xf-x₀)/T³,  a₄ = -15(xf-x₀)/T⁴,  a₅ = 6(xf-x₀)/T⁵
 
-Transitions between the 7 waypoints (Hover, Descend, Grasp, Lift,
-Transport, Place, Release) are controlled by a 5th-order minimum-jerk polynomial (see Macfarlane & Croft). For normalized time $\tau = t/T$ within each phase, the position interpolant is:
+which enforces zero velocity and zero acceleration at phase boundaries. Overall
+execution speed is controlled by a tunable `time_scale` parameter that uniformly
+scales all phase durations.
 
-$$s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$$
+### Trajectory Following
 
-which enforces zero velocity and zero acceleration at phase boundaries. Overall execution speed is controlled by a tunable `time_scale` parameter that uniformly scales all phase
-durations.
+At each timestep, the Cartesian position error dx between the trajectory and the
+actual end-effector position is resolved into joint velocities via damped
+least-squares (Buss 2004):
+dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
 
-### Trajectory Following via Inverse Differential Kinematics
-
-At each timestep, the Cartesian position error $\Delta\mathbf{x}$ between the
-trajectory and the actual end-effector position is resolved into joint velocities
-via damped least-squares (Buss 2004):
-
-$$\Delta\mathbf{q} = \mathbf{J}^\top(\mathbf{J}\mathbf{J}^\top + \lambda^2\mathbf{I})^{-1}\Delta\mathbf{x}$$
-
-The damping term $\lambda^2$ prevents joint velocity blowup near singular
-configurations. The 7-DOF arm tracking a 3D position target leaves a 4-dimensional
-null space, which is exploited to simultaneously pull the arm toward a safe nominal
-posture $Q_\text{HOME}$ without disturbing end-effector tracking (Liégeois 1977):
-
-$$\Delta\mathbf{q} = \Delta\mathbf{q}_\text{position} + (\mathbf{I} - \mathbf{J}^+\mathbf{J})\cdot k(Q_\text{HOME} - \mathbf{q})$$
+The damping term λ² prevents joint velocity blowup near singular configurations.
+The 7-DOF arm tracking a 3D position target leaves a 4-dimensional null space,
+which is exploited to simultaneously pull the arm toward a safe nominal posture
+Q_HOME without disturbing end-effector tracking (Liégeois 1977):
+dq = dq_position + (I - J⁺J) · k(Q_HOME - q)
 
 The resulting desired joint positions are then tracked by a joint-level PD controller
 that converts position and velocity errors into motor torques.
