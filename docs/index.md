@@ -171,11 +171,15 @@ Start with `ki=0, kd=0`. Increase `kp` until the arm visibly corrects wrist orie
 
 Considerations arose during initial presentations of this project to the class, where suggestions were made to not reduce the arm's DOF from 7 to 6. We chose to, instead of replacing the wrist entirely, blend existing inverse differential kinematics with information (injected into the null space) from the other PID loop. We additionally added a comparison to a full 6-element vector (position and orientation instead of just position) goal to compare against pure inverse kinematics with no separate PID in response to these suggestions.
 
+### Iteration Process
+
+The general process involved identifying the problem (for the project proposal), deciding where feedback control could assist in solving the problem, identifying a simulation environment, and then designing the implementation of how error for the PID loop is calculated. 
+
 ### What Worked
 
 The idea of adding a separate PID feedback loop to inject some information about desired wrist position proved to improve mixing score by quite a lot. This was the crux of our project, and it performed better (even if marginally) than using full inverse kinematics with orientation and position. 
 
-Additionally, getting the Mujoco simulation to have the robot follow trajectories worked well.
+Getting the Mujoco simulation to have the robot follow trajectories worked well.
 
 ### What Didn't Work
 
@@ -184,8 +188,6 @@ Lots of effort went into deciding 1) where to use feedback control in the projec
 For the first point, choosing to apply a separate PID loop for the wrist angle was decided after realizing using PID to "minimize jerk" was hard to accomplish. We found that trying to adjust all the joints' PID controllers to "minimize jerk" made it really difficult to have stable movement. Thus, we relied on the trajectory planning following the Macfarlane & Croft paper to minimize jerk overall, and decided to make the PID more granular. 
 
 For the second point, this is still an ongoing question. We decided to go with our metric because it was simpler to implement and allowed for a clear error signal for PID to correct. Having the liquid "lag" also introduced real-world inconsistencies as well. However, this representation is something that can be continually worked on and improved, as it is not necessarily the best representation of fluid physics.
-
-Lastly, issues arose with using Mujoco itself for picking up objects. We look to translate simulation to real Franka arms in the future. Future work is discussed below.
 
 ---
 ## Conclusion
