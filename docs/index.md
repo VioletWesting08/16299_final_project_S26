@@ -13,6 +13,8 @@ Robotic automation is expanding into chemistry and biology laboratories, where m
 However, this can be problematic. A centrifuge tube containing two separated liquid layers is highly sensitive to the dynamics of how it is moved. Sharp accelerations, abrupt direction changes, and orientation errors during transport induce sloshing that can re-mix layers and destroy the work the centrifuge has just done. Standard motion planners optimize for kinematic objectives such as path length, smoothness in joint space, or end-effector tracking error, do not necessarily have consideration of fluid mechanics within the end-effector object, of the direction of the effective acceleration vector inside the tube, or of how tube orientation should evolve in response to that vector.
 The goal of this project is to explore how feedback control can help develop these systems with those constraints in mind. We implement a feedback controller that runs on top of a conventional trajectory planner and continuously corrects the tube orientation so that the tube's long axis remains aligned with the direction of the effective acceleration the liquid experiences. Intuitively, the controller tries to make the tube behave from the liquid's perspective like a tube that is simply standing in gravity, even while the arm is moving along a trajectory. We evaluate this idea in simulation on a Franka Panda 7-DOF arm in MuJoCo, comparing transport with and without the PID layer.
 
+---
+
 ## Methods : Kinematics
 
 ### Control Architecture and Trajectory
@@ -23,16 +25,10 @@ The kinematics approach utilizes a dual-loop PID control architecture to track a
     The overall execution speed of these phases is parameterized by a tunable `time_scale`.
 * **Task-Space and Joint-Space Control**: A Task-Space PID controller minimizes the Cartesian error between the minimum-jerk trajectory and the end-effector's actual position. This 3D correction is mapped into the 7-DOF joint space using a damped pseudo-inverse Jacobian. This is combined with a null-space projection to keep the robot near a safe home posture ($Q_{\text{HOME}}$) without disrupting the end-effector task. Finally, a Joint-Space PD controller computes the necessary motor torques.
 
-### Active Slosh Compensation
+### Active "Slosh" Calculations
 To minimize liquid mixing, the system mathematically models the internal liquid surface by tracking the **effective gravity vector**. This vector accounts for both standard gravity and the low-pass filtered acceleration of the end-effector, simulating the delayed sloshing motion of a viscous fluid.
 
 If active wrist compensation (`use_wrist_pid`) is enabled, the controller computes the cross product between the actual tube's Z-axis and the effective gravity vector. This rotational error is mapped directly to the wrist joints via the Jacobian transpose, allowing the robot to actively tilt the tube into curves to counteract lateral acceleration and keep the liquid surface flat relative to the tube opening.
-
-## Files
-
-- **`test_picking.py`**: Interactive simulator with real-time viewer. Runs one trial with configurable LIQUID_TAU and wrist PID gains.
-- **`record_test_picking.py`**: Offline video recorder. Generates MP4 of trajectory with custom camera angles for visualization.
-- **`trial_runs.py`**: Batch sweep over LIQUID_TAU (0.0→2.0s). Runs multiple trials and saves stats to CSV.
 
 
 ## Methods : Partial PID
@@ -54,7 +50,7 @@ mix_angle = arccos(dot(tube_axis, a_liquid / |a_liquid|))   [degrees]
 
 ---
 
-### System Architecture
+## System Architecture
 ![system architecture](sys_arch_tube.png)
 
 **Three layers:**
@@ -65,9 +61,8 @@ mix_angle = arccos(dot(tube_axis, a_liquid / |a_liquid|))   [degrees]
 
 3. **Joint PID**: custom torque controller overriding MuJoCo's default gains: `τ = Kp*(q_des - q) - Kd*q̇`
 
----
 
-### Key Implementation Details
+### Implementation Choices
 
 **Minimum-jerk trajectory** (Flash & Hogan 1985, Macfarlane & Croft 2003):
 ```
@@ -81,13 +76,6 @@ dq = Jᵀ(JJᵀ + λ²I)⁻¹ dx
 ```
 
 **Null-space injection** (Liégeois 1977) lets wrist orientation control run without fighting the position task.
-
-
-## Files
-
-- **`test_picking.py`**: Interactive simulator with real-time viewer. Runs one trial with configurable LIQUID_TAU and wrist PID gains.
-- **`record_test_picking.py`**: Offline video recorder. Generates MP4 of trajectory with custom camera angles for visualization.
-- **`trial_runs.py`**: Batch sweep over LIQUID_TAU (0.0→2.0s). Runs multiple trials and saves stats to CSV.
 
 ---
 
@@ -137,6 +125,14 @@ pip install -r requirements.txt
 
 Place your Franka Panda XML at `franka_emika_panda/scene.xml`. The script should auto-generate a combined scene with the centrifuge tube injected.
 
+### Relevant Files
+
+- **`test_picking.py`**: Interactive simulator with real-time viewer. Runs one trial with configurable LIQUID_TAU and wrist PID gains.
+- **`record_test_picking.py`**: Offline video recorder. Generates MP4 of trajectory with custom camera angles for visualization.
+- **`trial_runs.py`**: Does a linear interp. over LIQUID_TAU (0.0→2.0s). Runs multiple trials and saves stats to CSV.
+- **`kinematics.py`**: Runs regular 6 element IDK as a baseline.
+
+
 ### Key Parameters
 
 | Parameter | Default | Effect |
@@ -146,9 +142,6 @@ Place your Franka Panda XML at `franka_emika_panda/scene.xml`. The script should
 | `USE_WRIST_PID` | True | Enable closed-loop mixing control |
 | `wrist_pid kp` | 0.5 | Correction aggressiveness |
 | `wrist_pid kd` | 0.1 | Wrist damping: increase if oscillating |
-
-### Tuning the PID
-Start with `ki=0, kd=0`. Increase `kp` until the arm visibly corrects wrist orientation during transport. Add `kd` if the wrist oscillates. 
 
 ---
 
