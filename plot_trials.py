@@ -19,7 +19,7 @@ from tkinter import filedialog, messagebox
 if len(sys.argv) > 1:
     CSV_PATH = sys.argv[1]
 else:
-    CSV_PATH = "trial_results.csv"
+    CSV_PATH = "outputs/trial_results.csv"
 
 # If file not found, open a file-picker dialog
 if not os.path.exists(CSV_PATH):

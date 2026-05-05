@@ -29,7 +29,7 @@ USE_LQR_WEIGHT = False         # use LQR-computed weight for null-space blending
 ACCEL_LPFILTER_ALPHA = 0.03   # low-pass filter on acceleration measurement (lower=more smoothing)
 
 # Liquid inertia model (first-order lag in reorientation)
-LIQUID_TAU = 0.0             # liquid reorientation time constant (seconds)
+LIQUID_TAU = 1.0             # liquid reorientation time constant (seconds)
 
 # Testing/validation options
 AGGRESSIVE_TRANSPORT = True   # fast transport phase (0.3s vs 1.0s) for stress-testing
@@ -59,7 +59,7 @@ def compute_lqr_orientation_weight(q_orientation_error: float, q_position_error:
 Q_ORIENTATION_ERROR = 300.0  # heavily prioritize wrist alignment
 Q_POSITION_ERROR = 1000.0
 WRIST_WEIGHT_LQR = compute_lqr_orientation_weight(Q_ORIENTATION_ERROR, Q_POSITION_ERROR)
-WRIST_WEIGHT = 0.27  # fallback weight if USE_LQR_WEIGHT is False
+WRIST_WEIGHT = 1  # fallback weight if USE_LQR_WEIGHT is False
 print(f"[LQR] WRIST_WEIGHT={WRIST_WEIGHT_LQR:.3f}")
 
 # ═══════════════════════════════════════════════════════════════
